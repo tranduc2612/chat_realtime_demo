@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (Always ignore to keep repo light)
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables and secrets (CRITICAL for security)
+.env
+.env.*
+!.env.example
+*.env
+
+# Testing and coverage tools
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Databases (Local development databases)
+*.db
+*.sqlite3
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Log files
+*.log
+log.txt
