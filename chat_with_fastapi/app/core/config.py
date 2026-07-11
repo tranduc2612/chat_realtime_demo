@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
 
     # Database
-    DATABASE_URL: str = "mysql+aiomysql://root:123456@localhost:3306/chat_db"
-    DATABASE_SYNC_URL: str = "mysql+pymysql://root:123456@localhost:3306/chat_db"
+    DATABASE_URL: str
+    DATABASE_SYNC_URL: str
 
     # JWT
     SECRET_KEY: str = "change-this-secret-key-in-production"

@@ -73,6 +73,13 @@ export interface LoginPayload {
   password: string;
 }
 
+export interface RegisterPayload {
+  email: string;
+  username: string;
+  password: string;
+  full_name?: string;
+}
+
 export interface Token {
   access_token: string;
   token_type: string;

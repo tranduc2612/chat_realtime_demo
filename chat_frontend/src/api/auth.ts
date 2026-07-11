@@ -1,5 +1,5 @@
 import client from './client';
-import type { LoginPayload, Token, User } from '../types';
+import type { LoginPayload, RegisterPayload, Token, User } from '../types';
 
 export async function login(payload: LoginPayload): Promise<Token> {
   const form = new URLSearchParams();
@@ -13,5 +13,10 @@ export async function login(payload: LoginPayload): Promise<Token> {
 
 export async function getMe(): Promise<User> {
   const { data } = await client.get<User>('/users/me');
+  return data;
+}
+
+export async function register(payload: RegisterPayload): Promise<User> {
+  const { data } = await client.post<User>('/users/', payload);
   return data;
 }

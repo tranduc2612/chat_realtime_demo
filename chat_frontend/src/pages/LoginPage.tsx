@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useThemeStore } from '../stores/themeStore';
 import ThemeToggle from '../components/ui/ThemeToggle';
@@ -179,6 +179,13 @@ export default function LoginPage() {
               ) : 'Sign in'}
             </button>
           </form>
+
+          <p className={`text-center text-sm mt-6 ${isDark ? 'text-white/50' : 'text-slate-500'}`}>
+            Don&apos;t have an account?{' '}
+            <Link to="/register" className={`font-semibold ${isDark ? 'text-sky-300 hover:text-sky-200' : 'text-sky-600 hover:text-sky-700'}`}>
+              Sign up
+            </Link>
+          </p>
         </div>
 
         <p className={`text-center text-xs mt-5 ${isDark ? 'text-white/20' : 'text-slate-400/70'}`}>

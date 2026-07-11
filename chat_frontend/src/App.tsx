@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
 import ChatPage from './pages/ChatPage';
 import { useAuthStore } from './stores/authStore';
 import { useThemeStore, applyTheme } from './stores/themeStore';
@@ -29,6 +30,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<RedirectIfAuth><LoginPage /></RedirectIfAuth>} />
+        <Route path="/register" element={<RedirectIfAuth><RegisterPage /></RedirectIfAuth>} />
         <Route
           path="/"
           element={
