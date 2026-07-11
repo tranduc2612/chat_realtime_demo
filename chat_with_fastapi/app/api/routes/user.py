@@ -12,6 +12,16 @@ from app.utils.translator import translate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
+@router.get("/search", response_model=list[UserResponse])
+async def search_users(
+    current_user: CurrentUser,
+    q: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+) -> list[UserResponse]:
+    service = UserService(db)
+    return await service.search(q, exclude_id=current_user.id)
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_active_user)) -> User:
     return current_user

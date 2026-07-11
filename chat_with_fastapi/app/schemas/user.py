@@ -22,6 +22,8 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: str
     is_active: bool
+    is_online: bool
+    last_seen_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

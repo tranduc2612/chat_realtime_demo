@@ -27,7 +27,8 @@ class MessageAttachment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    message_id: Mapped[int] = mapped_column(
+    message_id: Mapped[str] = mapped_column(
+        String(36),
         ForeignKey("messages.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

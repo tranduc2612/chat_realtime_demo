@@ -56,7 +56,8 @@ class ConversationMember(Base):
         nullable=True,
     )
 
-    last_read_message_id: Mapped[int | None] = mapped_column(
+    last_read_message_id: Mapped[str | None] = mapped_column(
+        String(36),
         ForeignKey("messages.id", ondelete="SET NULL"),
         nullable=True,
     )

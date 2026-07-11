@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password, verify_password
@@ -40,6 +40,22 @@ class UserService:
         await self.db.refresh(user)
         return user
     
+    async def search(self, q: str, exclude_id: str, limit: int = 10) -> list[User]:
+        pattern = f"%{q}%"
+        result = await self.db.execute(
+            select(User)
+            .where(
+                User.id != exclude_id,
+                User.is_active == True,
+                or_(
+                    User.username.ilike(pattern),
+                    User.full_name.ilike(pattern),
+                ),
+            )
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def authenticate(self, username: str, password: str) -> User | None:
         user = await self.get_by_username(username)
         if not user:

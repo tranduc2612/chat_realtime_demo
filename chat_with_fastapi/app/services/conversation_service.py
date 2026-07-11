@@ -1,4 +1,5 @@
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password, verify_password
@@ -12,8 +13,44 @@ class ConversationService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_list_by_id(self, user_id: int) -> User | None:
-        result = await self.db.execute(select(User).where(User.id == user_id))
+    async def find_direct(self, user_a: str, user_b: str) -> Conversation | None:
+        """Return existing direct conversation between two users, or None."""
+        a_convs = select(ConversationMember.conversation_id).where(
+            ConversationMember.user_id == user_a,
+            ConversationMember.left_at.is_(None),
+        )
+        b_convs = select(ConversationMember.conversation_id).where(
+            ConversationMember.user_id == user_b,
+            ConversationMember.left_at.is_(None),
+        )
+        result = await self.db.execute(
+            select(Conversation).where(
+                Conversation.type == ConversationType.DIRECT,
+                Conversation.id.in_(a_convs),
+                Conversation.id.in_(b_convs),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_list_for_user(self, user_id: str) -> list[Conversation]:
+        member_conv_ids = select(ConversationMember.conversation_id).where(
+            ConversationMember.user_id == user_id,
+            ConversationMember.left_at.is_(None),
+        )
+        result = await self.db.execute(
+            select(Conversation)
+            .where(Conversation.id.in_(member_conv_ids))
+            .options(selectinload(Conversation.members).selectinload(ConversationMember.user))
+            .order_by(Conversation.updated_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_with_members(self, conversation_id: str) -> Conversation | None:
+        result = await self.db.execute(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .options(selectinload(Conversation.members).selectinload(ConversationMember.user))
+        )
         return result.scalar_one_or_none()
     
     async def create(self, data: ConversationCreate) -> Conversation:
@@ -86,3 +123,46 @@ class ConversationService:
             return conversation
         
         raise ValueError("Invalid conversation type or user IDs")
+
+    async def add_members(self, conversation_id: str, user_ids: list[str], requester_id: str) -> Conversation:
+        # Verify conversation exists and requester is a member
+        result = await self.db.execute(
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == requester_id,
+                ConversationMember.left_at.is_(None),
+            )
+        )
+        if not result.scalar_one_or_none():
+            raise ValueError("Not a member of this conversation")
+
+        conv_result = await self.db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        conv = conv_result.scalar_one_or_none()
+        if not conv or conv.type != ConversationType.GROUP:
+            raise ValueError("Only group conversations support adding members")
+
+        for user_id in user_ids:
+            # Check for existing membership row (may have left)
+            existing = await self.db.execute(
+                select(ConversationMember).where(
+                    ConversationMember.conversation_id == conversation_id,
+                    ConversationMember.user_id == user_id,
+                )
+            )
+            row = existing.scalar_one_or_none()
+            if row:
+                # Re-activate if they left
+                if row.left_at is not None:
+                    row.left_at = None
+                    row.role = ConversationMemberRole.MEMBER
+            else:
+                self.db.add(ConversationMember(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role=ConversationMemberRole.MEMBER,
+                ))
+
+        await self.db.commit()
+        return await self.get_with_members(conversation_id)
