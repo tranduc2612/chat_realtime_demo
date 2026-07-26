@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { UsersThreeIcon, XIcon, MagnifyingGlassIcon, CircleNotchIcon } from '@phosphor-icons/react';
 import { useThemeStore } from '../../stores/themeStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useChatStore } from '../../stores/chatStore';
@@ -6,6 +7,8 @@ import { searchUsers } from '../../api/users';
 import { createConversation } from '../../api/conversations';
 import { useDebounce } from '../../hooks/useDebounce';
 import Avatar from '../ui/Avatar';
+import Alert from '../ui/Alert';
+import Button from '../ui/Button';
 import type { User } from '../../types';
 
 interface Props {
@@ -78,9 +81,12 @@ export default function CreateGroupModal({ onClose }: Props) {
   const textPrimary = isDark ? 'text-white' : 'text-slate-800';
   const textMuted = isDark ? 'text-white/40' : 'text-slate-400';
   const inputCls = isDark
-    ? 'bg-white/8 border-white/12 text-white placeholder-white/30 focus:border-sky-400/60'
-    : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400 focus:border-sky-400';
+    ? 'bg-white/8 border-white/12 text-white placeholder-white/30 focus:border-primary/60'
+    : 'bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400 focus:border-primary';
   const dropdownBg = isDark ? 'bg-[#0f172a] border-white/10' : 'bg-white border-slate-200';
+  const chipCls = isDark
+    ? 'bg-primary/20 text-primary border-primary/30'
+    : 'bg-primary/25 text-brand-text border-primary/50';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -92,10 +98,8 @@ export default function CreateGroupModal({ onClose }: Props) {
         {/* Header */}
         <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-white/8' : 'border-slate-100'}`}>
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="white" className="w-4 h-4">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" />
-              </svg>
+            <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center">
+              <UsersThreeIcon size={16} weight="bold" className="text-primary-foreground" />
             </div>
             <h2 className={`font-semibold text-base ${textPrimary}`}>New Group</h2>
           </div>
@@ -103,9 +107,7 @@ export default function CreateGroupModal({ onClose }: Props) {
             onClick={onClose}
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition ${isDark ? 'text-white/40 hover:text-white/70 hover:bg-white/8' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'}`}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-            </svg>
+            <XIcon size={16} />
           </button>
         </div>
 
@@ -118,7 +120,7 @@ export default function CreateGroupModal({ onClose }: Props) {
               type="text"
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
-              placeholder="e.g. Team Alpha, Friends…"
+              placeholder="e.g. Team Alpha, Friends"
               className={`w-full px-4 py-2.5 rounded-xl border text-sm outline-none transition-all ${inputCls}`}
             />
           </div>
@@ -135,16 +137,12 @@ export default function CreateGroupModal({ onClose }: Props) {
                 {selected.map((u) => (
                   <span
                     key={u.id}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition ${
-                      isDark ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30' : 'bg-sky-100 text-sky-700 border border-sky-200'
-                    }`}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition border ${chipCls}`}
                   >
                     <Avatar src={u.avatar_url} name={u.full_name ?? u.username} size="sm" />
                     {u.full_name ?? u.username}
                     <button onClick={() => toggleSelect(u)} className="opacity-60 hover:opacity-100 ml-0.5">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                      </svg>
+                      <XIcon size={12} weight="bold" />
                     </button>
                   </span>
                 ))}
@@ -154,22 +152,15 @@ export default function CreateGroupModal({ onClose }: Props) {
             {/* Search input */}
             <div className="relative">
               <div className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all ${inputCls}`}>
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 flex-shrink-0 ${textMuted}`}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-                </svg>
+                <MagnifyingGlassIcon size={16} className={`flex-shrink-0 ${textMuted}`} />
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search users to add…"
+                  placeholder="Search users to add..."
                   className={`flex-1 text-sm outline-none bg-transparent ${isDark ? 'text-white placeholder-white/30' : 'text-slate-800 placeholder-slate-400'}`}
                 />
-                {searching && (
-                  <svg className={`animate-spin w-4 h-4 flex-shrink-0 ${textMuted}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                  </svg>
-                )}
+                {searching && <CircleNotchIcon size={16} className={`animate-spin flex-shrink-0 ${textMuted}`} />}
               </div>
 
               {/* Dropdown */}
@@ -186,7 +177,7 @@ export default function CreateGroupModal({ onClose }: Props) {
                         <p className={`text-sm font-medium truncate ${textPrimary}`}>{u.full_name ?? u.username}</p>
                         <p className={`text-xs truncate ${textMuted}`}>@{u.username}</p>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${u.is_online ? 'bg-green-100 text-green-600' : isDark ? 'bg-white/8 text-white/30' : 'bg-slate-100 text-slate-400'}`}>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${u.is_online ? (isDark ? 'bg-green-500/15 text-green-400' : 'bg-green-100 text-green-600') : isDark ? 'bg-white/8 text-white/30' : 'bg-slate-100 text-slate-400'}`}>
                         {u.is_online ? 'Online' : 'Offline'}
                       </span>
                     </button>
@@ -196,15 +187,7 @@ export default function CreateGroupModal({ onClose }: Props) {
             </div>
           </div>
 
-          {/* Error */}
-          {error && (
-            <div className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm animate-fade-in ${isDark ? 'bg-red-500/15 border border-red-400/30 text-red-400' : 'bg-red-50 border border-red-200 text-red-500'}`}>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 flex-shrink-0">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-              </svg>
-              {error}
-            </div>
-          )}
+          {error && <Alert message={error} />}
         </div>
 
         {/* Footer */}
@@ -219,21 +202,16 @@ export default function CreateGroupModal({ onClose }: Props) {
             >
               Cancel
             </button>
-            <button
+            <Button
+              type="button"
+              size="sm"
               onClick={handleCreate}
-              disabled={creating || !groupName.trim() || selected.length < 2}
-              className="px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-400 hover:to-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] transition-all flex items-center gap-2"
+              disabled={!groupName.trim() || selected.length < 2}
+              loading={creating}
+              loadingLabel="Creating..."
             >
-              {creating ? (
-                <>
-                  <svg className="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                  </svg>
-                  Creating…
-                </>
-              ) : 'Create Group'}
-            </button>
+              Create Group
+            </Button>
           </div>
         </div>
       </div>

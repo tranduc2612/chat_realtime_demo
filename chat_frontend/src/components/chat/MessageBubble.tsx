@@ -1,3 +1,4 @@
+import { PaperclipIcon } from '@phosphor-icons/react';
 import type { Message } from '../../types';
 import { useAuthStore } from '../../stores/authStore';
 import { useThemeStore } from '../../stores/themeStore';
@@ -30,9 +31,9 @@ export default function MessageBubble({ message }: Props) {
   return (
     <div className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-1 animate-msg`}>
       <div
-        className={`max-w-xs lg:max-w-md px-4 py-2.5 rounded-2xl shadow-sm ${
+        className={`max-w-xs lg:max-w-md px-4 py-2.5 rounded-2xl ${
           isMine
-            ? 'bg-gradient-to-br from-sky-500 to-indigo-500 text-white rounded-br-sm shadow-indigo-500/20'
+            ? 'bg-primary text-primary-foreground rounded-br-sm'
             : isDark
               ? 'bg-white/8 text-white/90 rounded-bl-sm border border-white/8'
               : 'bg-white text-slate-800 rounded-bl-sm border border-slate-100 shadow-sm'
@@ -51,16 +52,19 @@ export default function MessageBubble({ message }: Props) {
               href={att.url}
               target="_blank"
               rel="noreferrer"
-              className={`mt-1.5 flex items-center gap-2 text-xs underline underline-offset-2 ${isMine ? 'text-white/80' : 'text-sky-500'}`}
+              className={`mt-1.5 flex items-center gap-1.5 text-xs underline underline-offset-2 ${
+                isMine ? 'text-[#1a1a2e]/70' : isDark ? 'text-primary' : 'text-brand-text'
+              }`}
             >
-              📎 {att.file_name ?? 'file'}
+              <PaperclipIcon size={12} />
+              {att.file_name ?? 'file'}
             </a>
           )
         )}
 
         <p className={`text-[10px] mt-1.5 select-none ${
           isMine
-            ? 'text-white/50 text-right'
+            ? 'text-[#1a1a2e]/50 text-right'
             : isDark ? 'text-white/30' : 'text-slate-400'
         }`}>
           {formatTime(message.created_at)}

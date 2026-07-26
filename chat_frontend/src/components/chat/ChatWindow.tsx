@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChatsCircleIcon, UserPlusIcon, DotsThreeIcon } from '@phosphor-icons/react';
 import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useThemeStore } from '../../stores/themeStore';
@@ -45,12 +46,10 @@ export default function ChatWindow() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center transition-colors duration-300" style={{ background: bg }}>
         <div className="relative mb-6">
-          <div className={`w-28 h-28 rounded-full flex items-center justify-center ${isDark ? 'bg-sky-500/5' : 'bg-sky-100/60'}`}>
-            <div className={`w-20 h-20 rounded-full flex items-center justify-center ${isDark ? 'bg-sky-500/10' : 'bg-sky-100'}`}>
-              <div className={`w-14 h-14 rounded-full flex items-center justify-center ${isDark ? 'bg-sky-500/15' : 'bg-sky-200/60'}`}>
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.3} stroke="currentColor" className={`w-7 h-7 ${isDark ? 'text-sky-400/60' : 'text-sky-400'}`}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
-                </svg>
+          <div className={`w-28 h-28 rounded-full flex items-center justify-center ${isDark ? 'bg-primary/5' : 'bg-primary/15'}`}>
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center ${isDark ? 'bg-primary/10' : 'bg-primary/25'}`}>
+              <div className={`w-14 h-14 rounded-full flex items-center justify-center ${isDark ? 'bg-primary/15' : 'bg-primary/35'}`}>
+                <ChatsCircleIcon size={28} weight="light" className={isDark ? 'text-primary/70' : 'text-brand-strong'} />
               </div>
             </div>
           </div>
@@ -90,19 +89,15 @@ export default function ChatWindow() {
               onClick={() => setShowAddMembers(true)}
               title="Add members"
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${
-                isDark ? 'text-sky-400 hover:bg-sky-400/10' : 'text-sky-600 hover:bg-sky-50'
+                isDark ? 'text-primary hover:bg-primary/10' : 'text-brand-text hover:bg-primary/15'
               }`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M18 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0ZM3 19.235v-.11a6.375 6.375 0 0 1 12.75 0v.109A12.318 12.318 0 0 1 9.374 21c-2.331 0-4.512-.645-6.374-1.766Z" />
-              </svg>
+              <UserPlusIcon size={14} />
               Add
             </button>
           )}
           <button className={`w-8 h-8 rounded-lg flex items-center justify-center transition ${isDark ? 'text-white/35 hover:text-white/70 hover:bg-white/5' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'}`}>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-4 h-4">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM18.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" />
-            </svg>
+            <DotsThreeIcon size={18} weight="bold" />
           </button>
         </div>
       </div>
@@ -115,7 +110,7 @@ export default function ChatWindow() {
               {[0, 1, 2].map((i) => (
                 <span
                   key={i}
-                  className="w-2 h-2 rounded-full bg-sky-400/50 animate-bounce"
+                  className="w-2 h-2 rounded-full bg-brand-strong/50 animate-bounce"
                   style={{ animationDelay: `${i * 0.15}s` }}
                 />
               ))}
@@ -125,7 +120,7 @@ export default function ChatWindow() {
         {!loadingHistory[activeConversationId] && currentMessages.length === 0 && (
           <div className="flex flex-col items-center mt-16">
             <p className={`text-sm ${isDark ? 'text-white/20' : 'text-slate-400'}`}>No messages yet</p>
-            <p className={`text-xs mt-1 ${isDark ? 'text-white/15' : 'text-slate-300'}`}>Say hi! 👋</p>
+            <p className={`text-xs mt-1 ${isDark ? 'text-white/15' : 'text-slate-300'}`}>Say hi!</p>
           </div>
         )}
         {currentMessages.map((msg) => (

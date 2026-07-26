@@ -62,20 +62,32 @@ SECRET_KEY=your-secret-key
 - `app/utils/translator.py` — i18n via `app/locales/{en,vi}.json`
 
 **Data model summary:**
-- `Conversation` — `type`: `direct` | `group`; UUID PKs
-- `ConversationMember` — links users to conversations; `role`: `owner`/`admin`/`member`; `last_read_message_id` for read receipts
-- `Message` — `type`: `text`/`image`/`video`/`file`/`mixed`/`system`; self-referential `reply_to_message_id`; composite index `(conversation_id, created_at)`
-- `MessageAttachment` — files attached to a message
-- `MessageRead` — fine-grained per-user read log
+- `User` — UUID PK; `role`: `admin`/`user`; `is_active`, `is_online`, `last_seen_at`
+- `Conversation` — UUID PK; `type`: `direct` | `group`
+- `ConversationMember` — int PK; links users to conversations; `role`: `owner`/`admin`/`member`; `left_at` (soft-remove), `last_read_message_id` for read receipts
+- `Message` — UUID PK; `type`: `text`/`image`/`video`/`file`/`mixed`/`system`; self-referential `reply_to_message_id`; composite index `(conversation_id, created_at)`
+- `MessageAttachment` — int PK; files attached to a message
+- `MessageRead` — int PK; fine-grained per-user read log
+
+**Routes overview:**
+- `auth.py` — `POST /auth/login` (OAuth2 password form → JWT)
+- `user.py` — `POST /users/` (public registration), `GET /users/search?q=`, `GET|PUT /users/me`, `DELETE /users/disable/{id}`
+- `conversation.py` — `GET /conversations`, `POST /conversations` (creates group, or reuses an existing direct conversation between the two users), `POST /conversations/{id}/members`
+- `message.py` — `GET /messages/{conversation_id}` (paginated history via `before_id`), `POST /messages/send`, plus the two WebSocket endpoints below
 
 **Messaging & WebSocket flow:**
-- `POST /api/v1/messages/send` — saves `Message` + attachments, bumps `Conversation.updated_at`, broadcasts `{"event": "new_message", "data": {...}}` to all connected WebSocket clients in that conversation
-- `WS /api/v1/messages/ws/{conversation_id}?token=<jwt>` — validates token + membership on connect; stays open receiving pings to keep alive
-- `app/core/websocket.py` — singleton `ConnectionManager` maps `conversation_id → [(user_id, WebSocket)]`
+- `POST /api/v1/messages/send` — saves `Message` + attachments, bumps `Conversation.updated_at`, then broadcasts `{"event": "new_message", "data": {...}}` twice: to conversation-room sockets via `manager.broadcast()` and to every member's user-level channel via `manager.notify_users()` (so members not currently viewing that conversation still get notified)
+- `WS /api/v1/messages/ws/{conversation_id}?token=<jwt>` — validates token + conversation membership on connect; joins the conversation room
+- `WS /api/v1/messages/ws/user/me?token=<jwt>` — user-level channel that receives `new_message` events for every conversation the user belongs to (used to update the sidebar/unread state outside the currently open conversation)
+- `app/core/websocket.py` — singleton `ConnectionManager` keeps both `conversation_id → [(user_id, WebSocket)]` (rooms) and `user_id → [WebSocket]` (user channels)
 
 **Auth:** `POST /api/v1/auth/login` accepts `OAuth2PasswordRequestForm`, returns JWT. `get_current_user` dep decodes token and loads `User` each request.
 
+**Bootstrapping the DB schema:** `python -m app.init_data` calls `init_db()` to create all tables directly from the SQLAlchemy metadata — an alternative to `alembic upgrade head` for a fresh throwaway DB (Alembic migrations remain the source of truth otherwise).
+
 **Windows async fix:** `app/core/database.py` sets `WindowsSelectorEventLoopPolicy` on `win32` — required for `aiomysql`.
+
+**No automated test suite** currently exists in this repo.
 
 ---
 
@@ -86,8 +98,9 @@ All commands run from inside `chat_frontend/`.
 ```bash
 npm install        # install dependencies
 npm run dev        # dev server on http://localhost:5173
-npm run build      # production build to dist/
+npm run build      # production build to dist/ (runs tsc -b first)
 npm run preview    # preview production build
+npm run lint       # eslint
 ```
 
 ### Frontend environment
@@ -108,14 +121,18 @@ VITE_WS_URL=ws://localhost:8000/api/v1
 
 Use `bg-primary`, `bg-secondary`, `text-primary` etc. (Tailwind utility classes wired to these tokens).
 
+**Dark/light theme:** separate from the tokens above — `src/index.css` defines a second layer of CSS custom properties (`--bg-base`, `--bg-surface`, `--text-primary`, etc.) under `:root` (light) and `.dark` (dark), with `@custom-variant dark (&:where(.dark, .dark *))`. `src/stores/themeStore.ts` (Zustand, persisted) holds `theme: 'dark' | 'light'` and toggles the `.dark` class on `<html>`; `App.tsx` applies it on mount via `applyTheme()`. `src/components/ui/ThemeToggle.tsx` is the UI control.
+
 **State management (Zustand):**
 - `src/stores/authStore.ts` — `token`, `user`; `login()`, `logout()`, `fetchMe()`; persisted to `localStorage` via `zustand/middleware persist`
 - `src/stores/chatStore.ts` — `conversations`, `activeConversationId`, `messages` (keyed by `conversation_id`), `ws`; `connectWs()` opens a WebSocket and wires `new_message` events to `receiveMessage()`; `sendMessage()` calls the REST API and deduplicates against incoming WS events
+- `src/stores/themeStore.ts` — see above
 
 **File layout:**
-- `src/api/` — thin Axios wrappers (`client.ts` adds the Bearer token interceptor, `auth.ts`, `messages.ts`, `conversations.ts`)
+- `src/api/` — thin Axios wrappers (`client.ts` adds the Bearer token interceptor, `auth.ts`, `users.ts`, `messages.ts`, `conversations.ts`)
 - `src/types/index.ts` — all shared TypeScript interfaces (`User`, `Message`, `Conversation`, `Attachment`, etc.)
-- `src/components/ui/` — reusable primitives (`Avatar`)
-- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`)
-- `src/pages/` — route-level pages (`LoginPage`, `ChatPage`)
-- `src/App.tsx` — `BrowserRouter` + `RequireAuth` guard; routes: `/login`, `/`
+- `src/hooks/useDebounce.ts` — used to debounce the user-search input
+- `src/components/ui/` — reusable primitives (`Avatar`, `ThemeToggle`)
+- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`, `AddMembersModal`, `CreateGroupModal`, `UserSearchDropdown`)
+- `src/pages/` — route-level pages (`LoginPage`, `RegisterPage`, `ChatPage`)
+- `src/App.tsx` — `BrowserRouter` + `RequireAuth`/`RedirectIfAuth` guards; routes: `/login`, `/register`, `/`

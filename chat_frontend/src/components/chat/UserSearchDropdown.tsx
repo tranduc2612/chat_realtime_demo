@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { MagnifyingGlassIcon, CircleNotchIcon } from '@phosphor-icons/react';
 import { useDebounce } from '../../hooks/useDebounce';
 import { searchUsers } from '../../api/users';
 import { createConversation } from '../../api/conversations';
@@ -68,24 +69,17 @@ export default function UserSearchDropdown() {
 
   return (
     <div ref={containerRef} className="relative">
-      <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition focus-within:ring-1 focus-within:ring-sky-400/40 focus-within:border-sky-400/50 ${inputCls}`}>
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 flex-shrink-0 ${isDark ? 'text-white/30' : 'text-slate-400'}`}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-        </svg>
+      <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/60 ${inputCls}`}>
+        <MagnifyingGlassIcon size={16} className={`flex-shrink-0 ${isDark ? 'text-white/30' : 'text-slate-400'}`} />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
-          placeholder="Search users…"
+          placeholder="Search users..."
           className={`flex-1 text-sm outline-none bg-transparent ${isDark ? 'text-white placeholder-white/30' : 'text-slate-800 placeholder-slate-400'}`}
         />
-        {loading && (
-          <svg className={`animate-spin w-4 h-4 flex-shrink-0 ${isDark ? 'text-white/30' : 'text-slate-400'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-          </svg>
-        )}
+        {loading && <CircleNotchIcon size={16} className={`animate-spin flex-shrink-0 ${isDark ? 'text-white/30' : 'text-slate-400'}`} />}
       </div>
 
       {open && (
@@ -110,7 +104,7 @@ export default function UserSearchDropdown() {
                     </div>
                     <span className={`flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${
                       user.is_online
-                        ? 'bg-green-100 text-green-600'
+                        ? isDark ? 'bg-green-500/15 text-green-400' : 'bg-green-100 text-green-600'
                         : isDark ? 'bg-white/8 text-white/30' : 'bg-slate-100 text-slate-400'
                     }`}>
                       {user.is_online ? 'Online' : 'Offline'}
