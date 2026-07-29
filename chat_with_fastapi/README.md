@@ -66,6 +66,33 @@ The API is served at `http://127.0.0.1:8000`, mounted under `/api/v1`.
 - Swagger docs: `http://127.0.0.1:8000/api/v1/docs`
 - ReDoc: `http://127.0.0.1:8000/api/v1/redoc`
 
+## Running with Docker
+
+A `docker-compose.yml` at the repo root (`chat_realtime_demo/`) runs the whole stack — MySQL, Redis, this backend, and the frontend — with no local Python/Node/MySQL/Redis install needed:
+
+```bash
+cd ..   # repo root, alongside chat_frontend/
+docker compose up
+```
+
+This builds dev-style containers (source bind-mounted, live reload) for the backend (`uvicorn --reload`) and frontend (`vite --host 0.0.0.0`), runs `alembic upgrade head` automatically on backend startup, and exposes:
+
+- Backend: `http://localhost:8000` (docs at `/api/v1/docs`)
+- Frontend: `http://localhost:5173`
+- MySQL: `localhost:3306` (root/`12345678`, db `chat_realtime_demo`)
+- Redis: `localhost:6379`
+
+MySQL data persists in a named volume across `docker compose down`/`up` (use `docker compose down -v` to wipe it). This is independent from local (non-Docker) dev — `make dev`/`npm run dev` and the existing `.env` files are unaffected; container-specific hostnames (`mysql`, `redis`) are injected via `docker-compose.yml`'s `environment:`, not by editing `.env`.
+
+## Testing
+
+```bash
+make test
+# equivalent to: pytest (runs with coverage — see pytest.ini)
+```
+
+Unit tests for the service layer (`app/services/`) live in `tests/`, using mocked DB sessions (`unittest.mock.MagicMock(spec=AsyncSession)`) — no real database required.
+
 ## Migrations
 
 ```bash
@@ -131,5 +158,4 @@ This means a message sent to any uvicorn worker/replica reaches sockets connecte
 
 ## Notes
 
-- No automated test suite currently exists.
 - On Windows, `app/core/database.py` sets `WindowsSelectorEventLoopPolicy`, required for `aiomysql`.
