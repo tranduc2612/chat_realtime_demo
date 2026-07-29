@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     DATABASE_SYNC_URL: str
 
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+
     # JWT
     SECRET_KEY: str = "change-this-secret-key-in-production"
     ALGORITHM: str = "HS256"

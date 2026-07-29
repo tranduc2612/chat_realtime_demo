@@ -1,7 +1,18 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, HTTPException
 from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.websocket import manager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await manager.start()
+    yield
+    await manager.stop()
+
 
 app = FastAPI(
         title=settings.APP_NAME,
@@ -9,7 +20,7 @@ app = FastAPI(
         openapi_url=f"{settings.API_PREFIX}/openapi.json",
         docs_url=f"{settings.API_PREFIX}/docs",
         redoc_url=f"{settings.API_PREFIX}/redoc",
-        # lifespan=lifespan,
+        lifespan=lifespan,
     )
 
 app.add_middleware(

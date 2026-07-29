@@ -1,0 +1,4 @@
+Khi send một message lên server
+=> Thì server sẽ publish message đó lên trên 1 CHANNELS ở trên redis
+=> Server đã phải subcribe CHANNELS khi startup server => và từ đó listen
+=> mỗi lần listen được message thì sẽ dựa vào data publish để phân loại (dựa vào conversationId, keys...) => để có thể send message websocket chính xác
