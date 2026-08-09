@@ -68,19 +68,21 @@ The API is served at `http://127.0.0.1:8000`, mounted under `/api/v1`.
 
 ## Running with Docker
 
-A `docker-compose.yml` at the repo root (`chat_realtime_demo/`) runs the whole stack — MySQL, Redis, this backend, and the frontend — with no local Python/Node/MySQL/Redis install needed:
+A `docker-compose.yml` at the repo root (`chat_realtime_demo/`) runs the whole stack — MySQL, Redis, this backend (load-balanced, 3 replicas), and the frontend — with no local Python/Node/MySQL/Redis install needed:
 
 ```bash
 cd ..   # repo root, alongside chat_frontend/
 docker compose up
 ```
 
-This builds dev-style containers (source bind-mounted, live reload) for the backend (`uvicorn --reload`) and frontend (`vite --host 0.0.0.0`), runs `alembic upgrade head` automatically on backend startup, and exposes:
+This builds dev-style containers (source bind-mounted, live reload): a one-shot `migrate` service that runs `alembic upgrade head` once and exits, three backend replicas (`backend-a`/`backend-b`/`backend-c`, each `uvicorn --reload`) that only start once `migrate` succeeds, an `nginx` load balancer in front of them, and the frontend (`vite --host 0.0.0.0`). Exposed ports:
 
-- Backend: `http://localhost:8000` (docs at `/api/v1/docs`)
+- Backend (via nginx): `http://localhost:8000` (docs at `/api/v1/docs`)
 - Frontend: `http://localhost:5173`
 - MySQL: `localhost:3306` (root/`12345678`, db `chat_realtime_demo`)
 - Redis: `localhost:6379`
+
+`nginx` is the only container publishing 8000 to the host — the three backend replicas are internal-only, reachable only through nginx's `upstream backend_pool` (`nginx/nginx.conf`, `least_conn` + passive health checks). Response header `X-Upstream-Addr` shows which replica handled a request. This is why the Redis Pub/Sub design in [Realtime architecture](#realtime-architecture-redis-pubsub) matters: two clients can land on two different replicas behind the load balancer and still see each other's messages live.
 
 MySQL data persists in a named volume across `docker compose down`/`up` (use `docker compose down -v` to wipe it). This is independent from local (non-Docker) dev — `make dev`/`npm run dev` and the existing `.env` files are unaffected; container-specific hostnames (`mysql`, `redis`) are injected via `docker-compose.yml`'s `environment:`, not by editing `.env`.
 
