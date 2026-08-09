@@ -1,3 +1,25 @@
+x-backend-base: &backend-base
+  build: ./chat_with_fastapi
+  restart: unless-stopped
+  command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  environment:
+    APP_NAME: API_CHAT_REALTIME
+    APP_VERSION: 1.0.0
+    API_PREFIX: /api/v1
+    DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
+    DATABASE_SYNC_URL: mysql+pymysql://root:12345678@mysql:3306/chat_realtime_demo
+    REDIS_URL: redis://redis:6379/0
+    SECRET_KEY: dev-secret-key-change-in-production
+  volumes:
+    - ./chat_with_fastapi:/app
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
 services:
   mysql:
     image: mysql:8.0
@@ -26,27 +48,47 @@ services:
       timeout: 5s
       retries: 10
 
-  backend:
+  # One-shot migration runner. Kept separate from the backend replicas below
+  # so `alembic upgrade head` runs exactly once instead of racing 3x
+  # concurrently against Alembic's version table.
+  migrate:
     build: ./chat_with_fastapi
-    restart: unless-stopped
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: alembic upgrade head
+    restart: "no"
     environment:
-      APP_NAME: API_CHAT_REALTIME
-      APP_VERSION: 1.0.0
-      API_PREFIX: /api/v1
       DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
       DATABASE_SYNC_URL: mysql+pymysql://root:12345678@mysql:3306/chat_realtime_demo
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: dev-secret-key-change-in-production
-    ports:
-      - "8000:8000"
     volumes:
       - ./chat_with_fastapi:/app
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+
+  # Three named backend replicas load-balanced by nginx (see nginx/nginx.conf).
+  # Fixed names (not `docker compose --scale`) so nginx's upstream block can
+  # address each one explicitly and actually round-robin between them.
+  backend-a:
+    <<: *backend-base
+
+  backend-b:
+    <<: *backend-base
+
+  backend-c:
+    <<: *backend-base
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - backend-a
+      - backend-b
+      - backend-c
 
   frontend:
     build: ./chat_frontend
@@ -61,7 +103,7 @@ services:
       - ./chat_frontend:/app
       - /app/node_modules
     depends_on:
-      - backend
+      - nginx
 
 volumes:
   mysql_data:
