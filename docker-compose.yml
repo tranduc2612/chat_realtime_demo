@@ -1,15 +1,22 @@
 x-backend-base: &backend-base
   build: ./chat_with_fastapi
+  # Tagged so `docker images` shows which version this environment is running
+  # (see VERSION at repo root — the single source of truth for APP_VERSION).
+  image: chat_realtime_demo-backend:${APP_VERSION:-1.0.0}-dev
   restart: unless-stopped
   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
   environment:
     APP_NAME: API_CHAT_REALTIME
-    APP_VERSION: 1.0.0
+    APP_VERSION: ${APP_VERSION:-1.0.0}
     API_PREFIX: /api/v1
     DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
     DATABASE_SYNC_URL: mysql+pymysql://root:12345678@mysql:3306/chat_realtime_demo
     REDIS_URL: redis://redis:6379/0
     SECRET_KEY: dev-secret-key-change-in-production
+    # Unset by default — Sentry stays off unless you set SENTRY_DSN in .env.
+    SENTRY_DSN: ${SENTRY_DSN:-}
+    SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+    SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
   volumes:
     - ./chat_with_fastapi:/app
   depends_on:
@@ -53,13 +60,17 @@ services:
   # concurrently against Alembic's version table.
   migrate:
     build: ./chat_with_fastapi
+    image: chat_realtime_demo-backend:${APP_VERSION:-1.0.0}-dev
     command: alembic upgrade head
     restart: "no"
     environment:
+      APP_VERSION: ${APP_VERSION:-1.0.0}
       DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
       DATABASE_SYNC_URL: mysql+pymysql://root:12345678@mysql:3306/chat_realtime_demo
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: dev-secret-key-change-in-production
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
     volumes:
       - ./chat_with_fastapi:/app
     depends_on:
@@ -92,11 +103,15 @@ services:
 
   frontend:
     build: ./chat_frontend
+    image: chat_realtime_demo-frontend:${APP_VERSION:-1.0.0}-dev
     restart: unless-stopped
     command: sh -c "npm run dev -- --host 0.0.0.0"
     environment:
       VITE_API_URL: http://localhost:8000/api/v1
       VITE_WS_URL: ws://localhost:8000/api/v1
+      VITE_APP_VERSION: ${APP_VERSION:-1.0.0}
+      VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+      VITE_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
     ports:
       - "5173:5173"
     volumes:

@@ -1,0 +1,195 @@
+name: CI/CD
+
+# pull_request (no branch filter) covers every PR; push is restricted to main
+# so it doesn't double-run alongside pull_request on branches with an open PR.
+# workflow_dispatch lets you manually re-run the whole pipeline, e.g. to
+# republish after bumping VERSION with no other code change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned to match the Dockerfiles (chat_with_fastapi/Dockerfile: python:3.12-slim,
+  # chat_frontend/Dockerfile: node:22-alpine) so "passes in CI" reliably means
+  # "passes in the image that actually ships".
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chat_with_fastapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: chat_with_fastapi/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Dummy values — tests use MagicMock(spec=AsyncSession) (see tests/conftest.py),
+      # no real DB/Redis needed. Settings just needs these to be present and
+      # well-formed enough for app.core.config/app.core.database to import.
+      - name: Run tests (make test == pytest, coverage via pytest.ini)
+        env:
+          DATABASE_URL: mysql+aiomysql://root:test@localhost:3306/test
+          DATABASE_SYNC_URL: mysql+pymysql://root:test@localhost:3306/test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-test-secret-key
+        run: pytest
+
+  frontend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chat_frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: chat_frontend/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run test
+
+      - run: npm run build
+
+      # Non-blocking: 6 pre-existing lint errors already exist on this branch
+      # (2x no-empty in chatStore.ts, a react-hooks/set-state-in-effect
+      # violation in UserSearchDropdown.tsx that needs a real refactor to fix
+      # safely) — unrelated to CI/CD setup. Reported here for visibility;
+      # flip to blocking once those are cleaned up separately.
+      - name: Lint (non-blocking — see comment above)
+        continue-on-error: true
+        run: npm run lint
+
+  e2e-test:
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built explicitly (not left to playwright.config.ts's webServer) so a
+      # cold multi-image build isn't racing that config's 120s startup
+      # timeout — once this step finishes, `docker compose up -d` in the
+      # webServer command just finds everything already built and running
+      # (reuseExistingServer: true) and returns near-instantly.
+      - name: Build and start the stack (docker-compose.yml == dev environment)
+        run: docker compose up -d --build
+
+      - name: Wait for the frontend to be reachable
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5173/ > /dev/null && exit 0
+            sleep 2
+          done
+          echo "Frontend never became reachable" >&2
+          docker compose logs
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - working-directory: e2e
+        run: npm ci
+
+      - working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - working-directory: e2e
+        run: npm run test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/test-results
+          retention-days: 7
+
+      - name: Tear down the stack
+        if: always()
+        run: docker compose down -v
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-test, e2e-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: echo "value=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./chat_with_fastapi
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-backend:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository }}-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      # Same image docker-compose.staging.yml/.prod.yml already build. It's
+      # dev-shaped at the Dockerfile level (CMD npm run dev) and only becomes
+      # a production artifact via the `command:` override those compose
+      # files already apply (npm run build && npm run preview ...) — running
+      # this published image standalone needs that same command, it's not a
+      # ready-to-`docker run` static server on its own. Documented here
+      # rather than quietly diverging with a second Dockerfile.
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./chat_frontend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-frontend:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository }}-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Tag and release (skip if this VERSION was already released)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.version.outputs.value }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists — skipping (bump VERSION to publish a new release)."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --generate-notes

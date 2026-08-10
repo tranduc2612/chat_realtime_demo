@@ -6,33 +6,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 chat_realtime_demo/
-├── chat_with_fastapi/   # Python backend (FastAPI)
-├── chat_frontend/       # React frontend (Vite + TypeScript)
-├── e2e/                 # Playwright end-to-end tests (drives the two above)
-├── nginx/nginx.conf     # Load balancer config (see below)
-└── docker-compose.yml   # MySQL + Redis + migrate + 3x backend + nginx + frontend, one command
+├── chat_with_fastapi/         # Python backend (FastAPI)
+├── chat_frontend/             # React frontend (Vite + TypeScript)
+├── e2e/                       # Playwright end-to-end tests (drives the two above)
+├── nginx/nginx.conf           # Load balancer config, shared by all three environments below
+├── VERSION                    # single source of truth for the app version — see Environments
+├── Makefile                   # root-level: `make dev`/`staging`/`prod` — do not confuse with
+│                               # chat_with_fastapi/Makefile's `make dev` (that one is backend-local,
+│                               # non-Docker `uvicorn --reload`; this one is the whole Docker stack)
+├── docker-compose.yml         # dev environment
+├── docker-compose.staging.yml # staging environment
+├── docker-compose.prod.yml    # production environment
+├── .env                       # dev secrets (committed — placeholder values only)
+└── .env.staging / .env.prod   # staging/prod secrets (gitignored — copy from the .example files)
 ```
 
-### Running the whole stack with Docker
+### Environments (dev / staging / production)
 
-From the repo root:
+Three independent, identically-shaped stacks (MySQL, Redis, a one-shot `migrate` service, 3 backend replicas behind nginx, frontend), each runnable with a single `make` target and each on its own port range so **all three can run at once on one machine**:
 
-```bash
-docker compose up
-```
+| Env | Command | Backend (via nginx) | Frontend | MySQL/Redis published? |
+|---|---|---|---|---|
+| dev | `make dev` (or bare `docker compose up`, e.g. from `e2e/`) | `:8000` | `:5173`, `vite dev` hot reload | yes (`:3306`/`:6379`) |
+| staging | `make staging` | `:8080` | `:5174`, real `vite build`+`preview` | no, internal only |
+| prod | `make prod` | `:9000` | `:5175`, real `vite build`+`preview` | no, internal only |
 
-Brings up MySQL, Redis, a one-shot `migrate` service (`alembic upgrade head`, runs once and exits), **three backend replicas** (`backend-a`/`backend-b`/`backend-c`, each `uvicorn --reload`) behind an **nginx load balancer**, and the frontend (`vite --host 0.0.0.0`) — with source bind-mounted for live reload, no local Python/Node/MySQL/Redis install needed.
+`docker-compose.yml` **is** the dev environment — bind-mounted source, `--reload`, hardcoded dev placeholder secrets, unchanged from before. `docker-compose.staging.yml`/`docker-compose.prod.yml` are separate, self-contained compose files (same shape, no bind mounts — they run whatever's baked into the image, closer to a real release build) driven by `.env.staging`/`.env.prod`. First-time setup for either: `cp .env.staging.example .env.staging` (and same for prod), fill in real values — the committed dev `.env` is fine as-is (its secrets are already public in `docker-compose.yml`'s history), but the `.example` placeholders for staging/prod are **not** safe to run with as-is. `make {staging,prod}-down` tears each down without touching the others (`-p chat_realtime_demo_{staging,prod}` gives each its own container/network namespace, which is also what lets all three coexist).
 
-- Backend (via nginx): `http://localhost:8000` (docs at `/api/v1/docs`)
-- Frontend: `http://localhost:5173`
-- MySQL: `localhost:3306` (root/`12345678`, db `chat_realtime_demo`)
-- Redis: `localhost:6379`
-
-Container-specific env (`mysql`/`redis` hostnames, etc.) is injected via `docker-compose.yml`'s `environment:` block, not by editing `.env` — local (non-Docker) dev via `make dev`/`npm run dev` is unaffected and keeps using the `.env` files below. MySQL data persists in a named volume (`docker compose down -v` to wipe it).
+**Versioning:** `VERSION` at the repo root (e.g. `1.0.0`) is the single source of truth. The root `Makefile` reads it and exports it as `APP_VERSION` before invoking `docker compose`, which flows into two places per environment: the backend's `APP_VERSION` setting (visible live at `/api/v1/docs` on any environment — FastAPI's `version=` field) and each image's tag (`chat_realtime_demo-backend:1.0.0-dev`, `...-staging`, or bare `...1.0.0` for prod — `docker images` shows all three side by side). To release a new version: bump `VERSION`, rerun `make <env>` — nothing else to touch.
 
 #### Load balancing (`nginx/nginx.conf`)
 
-`nginx` is the only container publishing port 8000 to the host; `backend-a/b/c` are internal-only and only reachable through it. `nginx`'s `upstream backend_pool` lists all three by their fixed compose service names (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin) and balances with `least_conn` plus passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`).
+Same config file, bind-mounted read-only into all three environments' `nginx` service. `nginx` is the only container publishing its environment's backend port to the host; `backend-a/b/c` are internal-only and only reachable through it. `nginx`'s `upstream backend_pool` lists all three by their fixed compose service names (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin) and balances with `least_conn` plus passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`, or `:8080`/`:9000` for staging/prod).
 
 This is where the Redis Pub/Sub design described below pays off: a `POST /messages/send` handled by `backend-b` publishes to Redis, and `backend-a`/`backend-c` each have their own listener task that delivers to *their* locally-connected sockets — so two users whose WebSocket connections land on different replicas (nginx doesn't guarantee session affinity, and none is needed) still see messages in real time. Migrations run once via the separate `migrate` service specifically to avoid 3 replicas racing to apply `alembic upgrade head` concurrently on startup.
 
@@ -117,6 +122,8 @@ SECRET_KEY=your-secret-key
 **Bootstrapping the DB schema:** `python -m app.init_data` calls `init_db()` to create all tables directly from the SQLAlchemy metadata — an alternative to `alembic upgrade head` for a fresh throwaway DB (Alembic migrations remain the source of truth otherwise).
 
 **Windows async fix:** `app/core/database.py` sets `WindowsSelectorEventLoopPolicy` on `win32` — required for `aiomysql`.
+
+**Error tracking (Sentry):** gated entirely on `SENTRY_DSN` (`app/core/config.py`) being set — unset (the default) means `sentry_sdk.init()` in `main.py` never runs, so dev stays silent unless you opt in. `release` is set to `settings.APP_VERSION` (the same VERSION-file-driven value used everywhere else), `environment` to `SENTRY_ENVIRONMENT` (`development`/`staging`/`production`, defaulted per compose file). FastAPI/Starlette/SQLAlchemy/Redis integrations are auto-detected — no explicit `integrations=[...]` list needed. Frontend mirrors this: `VITE_SENTRY_DSN` gates `Sentry.init()` in `main.tsx`, same `release`/`environment` convention, plus a `Sentry.ErrorBoundary` wrapping `<App />` for uncaught render errors.
 
 **Tests:** `chat_with_fastapi/tests/services/` — unit tests for the service layer, using `unittest.mock.MagicMock(spec=AsyncSession)` (see `tests/conftest.py`'s `mock_db`/`make_result` fixtures). No real database required; run via `make test` / `pytest` (coverage configured in `pytest.ini`).
 

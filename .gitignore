@@ -1,0 +1,9 @@
+# Real secrets — never commit these. docker-compose.yml doesn't depend on
+# .env existing (its values are hardcoded there or have ${VAR:-default}
+# fallbacks), so `docker compose up` works identically with or without it.
+.env
+.env.*
+!.env.staging.example
+!.env.prod.example
+
+.DS_Store

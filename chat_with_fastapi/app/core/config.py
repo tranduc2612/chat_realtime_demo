@@ -28,6 +28,13 @@ class Settings(BaseSettings):
         "http://localhost:8080",
         "http://localhost:5173",
     ]
+
+    # Sentry — unset (None) disables it entirely, so dev stays quiet by
+    # default; set SENTRY_DSN in .env.staging/.env.prod to turn it on there.
+    SENTRY_DSN: str | None = None
+    SENTRY_ENVIRONMENT: str = "development"
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
+
     model_config = SettingsConfigDict(env_file=".env")
 
 
