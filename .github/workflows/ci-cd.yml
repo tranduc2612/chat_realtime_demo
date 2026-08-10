@@ -91,6 +91,14 @@ jobs:
       - name: Build and start the stack (docker-compose.yml == dev environment)
         run: docker compose up -d --build
 
+      # `up -d` is detached — it never streams a failing container's own
+      # stdout/stderr (e.g. the actual Alembic traceback if `migrate` exits
+      # non-zero), only lifecycle events. Without this, a failure here is
+      # undiagnosable from the job log alone.
+      - name: Show container logs if the stack failed to start
+        if: failure()
+        run: docker compose logs --no-color
+
       - name: Wait for the frontend to be reachable
         run: |
           for i in $(seq 1 30); do

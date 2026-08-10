@@ -61,7 +61,12 @@ services:
   migrate:
     build: ./chat_with_fastapi
     image: chat_realtime_demo-backend:${APP_VERSION:-1.0.0}-dev
-    command: alembic upgrade head
+    # Retries a few times with backoff: a passing `mysqladmin ping` healthcheck
+    # means MySQL accepts connections, not that it's fully done with cold-start
+    # init — under heavy concurrent load (e.g. CI building 4 backend-image
+    # services + frontend at once on 2 CPUs) the very first real connection
+    # attempt can transiently fail even though MySQL is fine moments later.
+    command: sh -c "for i in 1 2 3 4 5; do alembic upgrade head && exit 0; echo 'Migration attempt failed, retrying in 5s...' >&2; sleep 5; done; echo 'Migration failed after 5 attempts' >&2; exit 1"
     restart: "no"
     environment:
       APP_VERSION: ${APP_VERSION:-1.0.0}
