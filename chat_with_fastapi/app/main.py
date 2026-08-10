@@ -1,10 +1,23 @@
 from contextlib import asynccontextmanager
 
+import sentry_sdk
 from fastapi import FastAPI, Depends, HTTPException
 from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.websocket import manager
+
+# Gated on SENTRY_DSN being set (defaults to None/unset) — dev stays silent
+# unless you explicitly opt it in via .env; staging/prod turn this on via
+# .env.staging/.env.prod. `release` ties Sentry events back to the same
+# VERSION-driven APP_VERSION used for image tags and Swagger's version field.
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.SENTRY_ENVIRONMENT,
+        release=settings.APP_VERSION,
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+    )
 
 
 @asynccontextmanager

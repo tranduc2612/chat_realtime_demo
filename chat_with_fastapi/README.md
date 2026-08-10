@@ -42,6 +42,8 @@ SECRET_KEY=your-secret-key
 
 `DATABASE_URL` (async) is used at runtime; `DATABASE_SYNC_URL` (sync) is used by Alembic. `REDIS_URL` defaults to `redis://localhost:6379/0` if unset.
 
+Sentry is optional and off by default — set `SENTRY_DSN` to turn it on (see `.env.example`). With no DSN, `sentry_sdk.init()` never runs and nothing changes about how the app behaves.
+
 Create the database schema — either run migrations:
 
 ```bash
@@ -68,21 +70,22 @@ The API is served at `http://127.0.0.1:8000`, mounted under `/api/v1`.
 
 ## Running with Docker
 
-A `docker-compose.yml` at the repo root (`chat_realtime_demo/`) runs the whole stack — MySQL, Redis, this backend, and the frontend — with no local Python/Node/MySQL/Redis install needed:
+The repo root (`chat_realtime_demo/`) has three environments — dev, staging, production — each a full stack (MySQL, Redis, a one-shot `migrate` service, this backend as 3 replicas behind nginx, and the frontend), each on its own port range so all three can run at once:
 
 ```bash
-cd ..   # repo root, alongside chat_frontend/
-docker compose up
+cd ..              # repo root, alongside chat_frontend/
+make dev           # :8000 backend / :5173 frontend — bind-mounted source, --reload
+make staging       # :8080 backend / :5174 frontend — real build, needs .env.staging first
+make prod          # :9000 backend / :5175 frontend — real build, needs .env.prod first
 ```
 
-This builds dev-style containers (source bind-mounted, live reload) for the backend (`uvicorn --reload`) and frontend (`vite --host 0.0.0.0`), runs `alembic upgrade head` automatically on backend startup, and exposes:
+`make dev` is equivalent to (and interchangeable with) running `cd .. && docker compose up` directly — that's what `e2e/` uses. Staging/prod need a one-time setup step: `cp .env.staging.example .env.staging` (and the same for prod), then fill in real values — the placeholder `.example` values are not safe to run with as-is. `make {dev,staging,prod}-down` tears down the corresponding environment only.
 
-- Backend: `http://localhost:8000` (docs at `/api/v1/docs`)
-- Frontend: `http://localhost:5173`
-- MySQL: `localhost:3306` (root/`12345678`, db `chat_realtime_demo`)
-- Redis: `localhost:6379`
+Only dev builds with source bind-mounted and `uvicorn --reload`; staging/prod run whatever's baked into the image at build time (closer to a real release artifact), and the frontend runs an actual `vite build && vite preview` there instead of the dev server. `nginx` is the only container publishing its environment's backend port to the host in every case — the three backend replicas are internal-only, reachable only through nginx's `upstream backend_pool` (`nginx/nginx.conf`, shared across all three environments, `least_conn` + passive health checks). Response header `X-Upstream-Addr` shows which replica handled a request. This is why the Redis Pub/Sub design in [Realtime architecture](#realtime-architecture-redis-pubsub) matters: two clients can land on two different replicas behind the load balancer and still see each other's messages live.
 
-MySQL data persists in a named volume across `docker compose down`/`up` (use `docker compose down -v` to wipe it). This is independent from local (non-Docker) dev — `make dev`/`npm run dev` and the existing `.env` files are unaffected; container-specific hostnames (`mysql`, `redis`) are injected via `docker-compose.yml`'s `environment:`, not by editing `.env`.
+**Versioning:** the root `VERSION` file (e.g. `1.0.0`) is the single source of truth, injected as `APP_VERSION` by the root `Makefile`. It shows up live at `/api/v1/docs` (this file's `version=` in the Swagger UI) on whichever environment you hit, and each environment's image is tagged with it (`chat_realtime_demo-backend:1.0.0-dev` / `...-staging` / bare `...1.0.0` for prod — `docker images` shows all three). Bump `VERSION` and rerun `make <env>` to release a new version.
+
+MySQL data persists in a named volume per environment (`docker compose down -v` — or `make dev-down` etc. followed by a manual `docker volume rm` — to wipe it). This is independent from local (non-Docker) dev — `chat_with_fastapi`'s own `make dev`/`npm run dev` (note: same target name, different Makefile — that one is backend-only, non-Docker) and the existing `.env` files inside `chat_with_fastapi/`/`chat_frontend/` are unaffected; container-specific hostnames (`mysql`, `redis`) are injected via each `docker-compose.*.yml`'s `environment:` block.
 
 ## Testing
 
