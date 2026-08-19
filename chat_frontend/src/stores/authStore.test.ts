@@ -19,6 +19,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     username: 'alice',
     full_name: 'Alice',
     avatar_url: null,
+    role: 'user',
     is_active: true,
     is_online: false,
     last_seen_at: null,

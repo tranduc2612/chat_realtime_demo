@@ -5,6 +5,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.llm import close_openai
 from app.core.websocket import manager
 
 # Gated on SENTRY_DSN being set (defaults to None/unset) — dev stays silent
@@ -25,6 +26,9 @@ async def lifespan(app: FastAPI):
     await manager.start()
     yield
     await manager.stop()
+    # No-op unless the RAG chatbot was actually used — the OpenAI client is
+    # created lazily on first request, not at startup.
+    await close_openai()
 
 
 app = FastAPI(

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { SignOutIcon, PlusIcon, UsersThreeIcon, ChatsCircleIcon } from '@phosphor-icons/react';
+import { SignOutIcon, PlusIcon, UsersThreeIcon, ChatsCircleIcon, RobotIcon } from '@phosphor-icons/react';
+import { Link } from 'react-router-dom';
 import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useThemeStore } from '../../stores/themeStore';
@@ -93,6 +94,19 @@ export default function ConversationList() {
             </button>
           </div>
         </div>
+
+        <Link
+          to="/chat-bot"
+          className={`w-full flex items-center gap-2 px-3 py-2 mb-3 rounded-xl text-xs font-medium transition ${
+            isDark
+              ? 'bg-white/5 text-white/70 hover:bg-white/10'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <RobotIcon size={15} weight="fill" className="text-brand-strong" />
+          Internal Assistant
+          <span className={`ml-auto ${isDark ? 'text-white/25' : 'text-slate-300'}`}>AI</span>
+        </Link>
 
         <div className="flex items-center justify-between mb-2">
           <h2 className={`text-xs font-semibold uppercase tracking-widest ${isDark ? 'text-white/35' : 'text-slate-400'}`}>

@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.models.user import UserRole
+
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -21,6 +23,10 @@ class UserUpdate(BaseModel):
 
 class UserResponse(UserBase):
     id: str
+    # Exposed so the frontend can show admin-only surfaces (the knowledge-base
+    # panel on /chat-bot). The API still enforces this server-side — see
+    # deps.get_current_admin.
+    role: UserRole
     is_active: bool
     is_online: bool
     last_seen_at: datetime | None = None

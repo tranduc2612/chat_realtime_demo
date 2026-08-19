@@ -7,3 +7,10 @@
 !.env.prod.example
 
 .DS_Store
+
+# Scratch folder for documents you're about to upload to the RAG knowledge
+# base. The app never reads from here — uploads are parsed straight from the
+# HTTP request and never written to disk — so this is purely a convenient
+# staging spot. Ignored because real internal documents must never be
+# committed.
+demo_docs/

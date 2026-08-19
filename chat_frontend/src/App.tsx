@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ChatPage from './pages/ChatPage';
+import ChatBotPage from './pages/ChatBotPage';
 import { useAuthStore } from './stores/authStore';
 import { useThemeStore, applyTheme } from './stores/themeStore';
 
@@ -36,6 +37,14 @@ export default function App() {
           element={
             <RequireAuth>
               <ChatPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/chat-bot"
+          element={
+            <RequireAuth>
+              <ChatBotPage />
             </RequireAuth>
           }
         />

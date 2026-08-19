@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import type { Conversation } from '../../types';
 
 vi.mock('../../stores/chatStore', () => ({ useChatStore: vi.fn() }));
@@ -12,6 +13,15 @@ import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useThemeStore } from '../../stores/themeStore';
 import ConversationList from './ConversationList';
+
+/** ConversationList renders a <Link> to /chat-bot, which needs a router. */
+function renderList() {
+  return render(
+    <MemoryRouter>
+      <ConversationList />
+    </MemoryRouter>,
+  );
+}
 
 function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -62,13 +72,13 @@ beforeEach(() => {
 describe('ConversationList', () => {
   it('fetches conversations once on mount', () => {
     const { fetchConversations } = setup();
-    render(<ConversationList />);
+    renderList();
     expect(fetchConversations).toHaveBeenCalledTimes(1);
   });
 
   it('shows an empty state when there are no conversations', () => {
     setup({ conversations: [] });
-    render(<ConversationList />);
+    renderList();
     expect(screen.getByText('No conversations yet')).toBeInTheDocument();
   });
 
@@ -76,7 +86,7 @@ describe('ConversationList', () => {
     const { setActiveConversation, connectWs } = setup({
       conversations: [makeConversation({ id: 'conv-1' })],
     });
-    render(<ConversationList />);
+    renderList();
 
     fireEvent.click(screen.getByText('Bob'));
 
@@ -89,13 +99,13 @@ describe('ConversationList', () => {
       conversations: [makeConversation({ id: 'conv-1' })],
       unread: { 'conv-1': 150 },
     });
-    render(<ConversationList />);
+    renderList();
     expect(screen.getByText('99+')).toBeInTheDocument();
   });
 
   it('logs out and navigates when the sign-out button is clicked', () => {
     const { logout } = setup();
-    render(<ConversationList />);
+    renderList();
 
     fireEvent.click(screen.getByTitle('Sign out'));
 

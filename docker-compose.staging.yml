@@ -29,6 +29,16 @@ x-backend-base: &backend-base
     SENTRY_DSN: ${SENTRY_DSN:-}
     SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-staging}
     SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.2}
+    # RAG chatbot. Unset OPENAI_API_KEY leaves /api/v1/bot and
+    # /api/v1/documents returning 503 — everything else runs as normal.
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+    OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+    CHROMA_HOST: chroma
+    CHROMA_PORT: 8000
+    CHROMA_COLLECTION: ${CHROMA_COLLECTION:-internal_docs}
+    RAG_TOP_K: ${RAG_TOP_K:-5}
+    RAG_MAX_DISTANCE: ${RAG_MAX_DISTANCE:-0.75}
   depends_on:
     mysql:
       condition: service_healthy
@@ -36,6 +46,11 @@ x-backend-base: &backend-base
       condition: service_healthy
     migrate:
       condition: service_completed_successfully
+    # service_started, not service_healthy: the vector store is connected to
+    # lazily on the first RAG request (and reconnects on failure), so the
+    # backend has no reason to block on Chroma being up.
+    chroma:
+      condition: service_started
 
 services:
   mysql:
@@ -60,6 +75,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Vector store for the RAG chatbot — holds the embedded chunks of every
+  # uploaded internal document (metadata stays in MySQL). A server rather than
+  # an embedded PersistentClient: the three backend replicas would otherwise
+  # contend over one SQLite file. Not published to the host (like MySQL/Redis
+  # here) — only the backend talks to it. Pinned to match chromadb-client.
+  chroma:
+    image: chromadb/chroma:1.5.9
+    restart: unless-stopped
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chroma_data_staging:/data
 
   # One-shot migration runner — see docker-compose.yml for why this is
   # separate from the backend replicas (avoids 3x racing on `alembic upgrade
@@ -126,3 +155,4 @@ services:
 
 volumes:
   mysql_data_staging:
+  chroma_data_staging:
