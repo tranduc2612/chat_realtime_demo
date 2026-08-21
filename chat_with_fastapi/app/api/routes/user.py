@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.presence import presence
 from app.api.deps import CurrentUser, Language, get_current_active_user, get_language
 from app.models.user import User
 from app.schemas.user import UserCreate, UserListResponse, UserResponse, UserUpdate
@@ -19,7 +20,15 @@ async def search_users(
     db: AsyncSession = Depends(get_db),
 ) -> list[UserResponse]:
     service = UserService(db)
-    return await service.search(q, exclude_id=current_user.id)
+    users = await service.search(q, exclude_id=current_user.id)
+
+    # Overlay live presence, same as the conversation list — User.is_online is
+    # only the last known value
+    online = await presence.online_among([u.id for u in users])
+    return [
+        UserResponse.model_validate(u).model_copy(update={"is_online": u.id in online})
+        for u in users
+    ]
 
 
 @router.get("/me", response_model=UserResponse)

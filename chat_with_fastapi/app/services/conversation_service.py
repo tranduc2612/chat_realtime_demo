@@ -32,6 +32,28 @@ class ConversationService:
         )
         return result.scalar_one_or_none()
 
+    async def get_contact_ids(self, user_id: str) -> list[str]:
+        """Everyone who shares a conversation with this user, excluding themselves.
+
+        These are exactly the people who should hear about their presence
+        changing — broadcasting to every account would leak who is online to
+        strangers, and cost a Redis publish per user on the whole instance.
+        """
+        my_conv_ids = select(ConversationMember.conversation_id).where(
+            ConversationMember.user_id == user_id,
+            ConversationMember.left_at.is_(None),
+        )
+        result = await self.db.execute(
+            select(ConversationMember.user_id)
+            .where(
+                ConversationMember.conversation_id.in_(my_conv_ids),
+                ConversationMember.user_id != user_id,
+                ConversationMember.left_at.is_(None),
+            )
+            .distinct()
+        )
+        return list(result.scalars().all())
+
     async def get_list_for_user(self, user_id: str) -> list[Conversation]:
         member_conv_ids = select(ConversationMember.conversation_id).where(
             ConversationMember.user_id == user_id,

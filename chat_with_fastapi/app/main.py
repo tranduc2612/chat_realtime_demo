@@ -5,6 +5,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.presence import presence
 from app.core.websocket import manager
 
 # Gated on SENTRY_DSN being set (defaults to None/unset) — dev stays silent
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     await manager.start()
     yield
     await manager.stop()
+    await presence.close()
 
 
 app = FastAPI(

@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import type { Conversation, Message, ReadEvent, ReadReceipt, TypingEvent, TypingUser } from '../types';
+import type {
+  Conversation,
+  Message,
+  PresenceEvent,
+  ReadEvent,
+  ReadReceipt,
+  TypingEvent,
+  TypingUser,
+} from '../types';
 import { getConversations } from '../api/conversations';
 import {
   sendMessage as apiSend,
@@ -54,6 +62,7 @@ interface ChatState {
   receiveMessage: (message: Message, fromOther?: boolean) => void;
   receiveTyping: (event: TypingEvent) => void;
   sendTyping: (isTyping: boolean) => void;
+  receivePresence: (event: PresenceEvent) => void;
   fetchReads: (conversationId: string) => Promise<void>;
   receiveRead: (event: ReadEvent) => void;
   markRead: (conversationId: string, messageId: string) => Promise<void>;
@@ -201,6 +210,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  receivePresence: ({ user_id, is_online }) => {
+    // Presence lives on the member profiles inside each conversation, which is
+    // where the sidebar and the chat header already read it from
+    set((state) => {
+      let changed = false;
+      const conversations = state.conversations.map((conv) => {
+        if (!conv.members.some((m) => m.id === user_id && m.is_online !== is_online)) return conv;
+        changed = true;
+        return {
+          ...conv,
+          members: conv.members.map((m) => (m.id === user_id ? { ...m, is_online } : m)),
+        };
+      });
+      return changed ? { conversations } : state;
+    });
+  },
+
   fetchReads: async (conversationId) => {
     try {
       const receipts = await getReadReceipts(conversationId);
@@ -273,6 +299,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     socket.onmessage = (event) => {
       try {
         const { event: evt, data } = JSON.parse(event.data);
+        if (evt === 'presence') {
+          get().receivePresence(data as PresenceEvent);
+          return;
+        }
         if (evt !== 'new_message') return;
         const message = data as Message;
 

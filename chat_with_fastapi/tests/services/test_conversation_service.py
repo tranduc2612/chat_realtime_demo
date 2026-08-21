@@ -222,3 +222,20 @@ async def test_add_members_skips_already_active_member(mock_db):
 
     mock_db.add.assert_not_called()
     assert active_member.role == ConversationMemberRole.MEMBER
+
+
+async def test_get_contact_ids_returns_everyone_sharing_a_conversation(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=["user-b", "user-c"])
+
+    service = ConversationService(mock_db)
+    result = await service.get_contact_ids("user-a")
+
+    assert result == ["user-b", "user-c"]
+
+
+async def test_get_contact_ids_is_empty_for_someone_with_no_conversations(mock_db):
+    mock_db.execute.return_value = make_result(scalars_all=[])
+
+    service = ConversationService(mock_db)
+
+    assert await service.get_contact_ids("user-a") == []

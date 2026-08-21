@@ -312,6 +312,66 @@ describe('receiveTyping', () => {
   });
 });
 
+describe('receivePresence', () => {
+  function withMember(is_online: boolean) {
+    return makeConversation({
+      members: [
+        { id: 'user-b', username: 'bob', full_name: 'Bob', avatar_url: null, is_online },
+      ],
+    });
+  }
+
+  it('flips the member’s online flag inside every conversation they belong to', () => {
+    useChatStore.setState({
+      conversations: [
+        { ...withMember(false), id: 'conv-1' },
+        { ...withMember(false), id: 'conv-2' },
+      ],
+    });
+
+    useChatStore
+      .getState()
+      .receivePresence({ user_id: 'user-b', is_online: true, last_seen_at: '2026-01-01T00:00:00Z' });
+
+    expect(useChatStore.getState().conversations.map((c) => c.members[0].is_online)).toEqual([true, true]);
+  });
+
+  it('leaves state untouched when the flag already matches', () => {
+    useChatStore.setState({ conversations: [withMember(true)] });
+    const before = useChatStore.getState().conversations;
+
+    useChatStore
+      .getState()
+      .receivePresence({ user_id: 'user-b', is_online: true, last_seen_at: '2026-01-01T00:00:00Z' });
+
+    expect(useChatStore.getState().conversations).toBe(before);
+  });
+
+  it('ignores a user who is not a member of any loaded conversation', () => {
+    useChatStore.setState({ conversations: [withMember(false)] });
+
+    useChatStore
+      .getState()
+      .receivePresence({ user_id: 'stranger', is_online: true, last_seen_at: '2026-01-01T00:00:00Z' });
+
+    expect(useChatStore.getState().conversations[0].members[0].is_online).toBe(false);
+  });
+
+  it('is routed from the user socket', () => {
+    useChatStore.setState({ conversations: [withMember(false)] });
+    useChatStore.getState().connectUserWs('token-a');
+
+    FakeWebSocket.instances[0].onmessage?.({
+      data: JSON.stringify({
+        event: 'presence',
+        data: { user_id: 'user-b', is_online: true, last_seen_at: '2026-01-01T00:00:00Z' },
+      }),
+    });
+
+    expect(useChatStore.getState().conversations[0].members[0].is_online).toBe(true);
+  });
+});
+
 describe('read receipts', () => {
   function makeReceipt(overrides: Partial<ReadReceipt> = {}): ReadReceipt {
     return {

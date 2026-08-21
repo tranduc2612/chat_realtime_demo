@@ -1,14 +1,19 @@
+import asyncio
 import json
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.presence import HEARTBEAT_INTERVAL_SECONDS, presence
 from app.core.security import decode_access_token
 from app.core.websocket import manager
 from app.api.deps import CurrentUser
 from app.models.user import User
 from app.schemas.message import MarkRead, MessageResponse, ReadReceipt, SendMessage
+from app.services.conversation_service import ConversationService
 from app.services.message_service import MessageService
 from app.services.user_service import UserService
 
@@ -112,6 +117,45 @@ async def send_message(
     return response
 
 
+async def _heartbeat(user_id: str, connection_id: str) -> None:
+    """Keep this connection's presence entry fresh for as long as it's open."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        await presence.heartbeat(user_id, connection_id)
+
+
+async def _publish_presence(user_id: str, is_online: bool) -> None:
+    """Persist last_seen_at and tell this user's contacts they came on/offline.
+
+    Uses its own session rather than the socket's: that one was opened when the
+    connection was established, which may have been hours ago.
+    """
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        user_service = UserService(db)
+        user = await user_service.get_by_id(user_id)
+        if user is None:
+            return
+        user.is_online = is_online
+        user.last_seen_at = now
+        db.add(user)
+        await db.commit()
+
+        contact_ids = await ConversationService(db).get_contact_ids(user_id)
+
+    await manager.notify_users(
+        contact_ids,
+        {
+            "event": "presence",
+            "data": {
+                "user_id": user_id,
+                "is_online": is_online,
+                "last_seen_at": now.isoformat(),
+            },
+        },
+    )
+
+
 async def _broadcast_typing(conversation_id: str, user: User, is_typing: bool) -> None:
     """Tell everyone else in the room whether `user` is currently typing."""
     await manager.broadcast(
@@ -208,8 +252,21 @@ async def websocket_user(
         return
 
     await manager.connect_user(user_id, websocket)
+
+    # This socket lives for the whole session (one per tab), which makes it the
+    # natural signal for "is this user online". Counting connections in Redis is
+    # what lets a second tab close without reporting the user offline.
+    connection_id = uuid4().hex
+    if await presence.connected(user_id, connection_id):
+        await _publish_presence(user_id, is_online=True)
+    heartbeat = asyncio.create_task(_heartbeat(user_id, connection_id))
+
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect_user(user_id, websocket)
+    finally:
+        heartbeat.cancel()
+        if await presence.disconnected(user_id, connection_id):
+            await _publish_presence(user_id, is_online=False)

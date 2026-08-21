@@ -72,6 +72,12 @@ export interface TypingEvent extends TypingUser {
   is_typing: boolean;
 }
 
+export interface PresenceEvent {
+  user_id: string;
+  is_online: boolean;
+  last_seen_at: string;
+}
+
 /** How far one member has read — a watermark, not a row per message. */
 export interface ReadReceipt {
   user_id: string;
