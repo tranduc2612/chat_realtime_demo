@@ -8,11 +8,21 @@ from app.core.security import decode_access_token
 from app.core.websocket import manager
 from app.api.deps import CurrentUser
 from app.models.user import User
-from app.schemas.message import MessageResponse, SendMessage
+from app.schemas.message import MarkRead, MessageResponse, ReadReceipt, SendMessage
 from app.services.message_service import MessageService
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/messages", tags=["messages"])
+
+
+def _to_receipt(user: User, last_read_message_id: str | None) -> ReadReceipt:
+    return ReadReceipt(
+        user_id=user.id,
+        username=user.username,
+        full_name=user.full_name,
+        avatar_url=user.avatar_url,
+        last_read_message_id=last_read_message_id,
+    )
 
 
 @router.get("/{conversation_id}", response_model=list[MessageResponse])
@@ -29,6 +39,52 @@ async def get_history(
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     return messages
+
+
+@router.get("/{conversation_id}/reads", response_model=list[ReadReceipt])
+async def get_read_receipts(
+    conversation_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> list[ReadReceipt]:
+    service = MessageService(db)
+    try:
+        receipts = await service.get_read_receipts(conversation_id, current_user.id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    return [_to_receipt(user, last_read_id) for user, last_read_id in receipts]
+
+
+@router.post("/{conversation_id}/read", response_model=ReadReceipt)
+async def mark_read(
+    conversation_id: str,
+    data: MarkRead,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ReadReceipt:
+    service = MessageService(db)
+    try:
+        member = await service.mark_read(conversation_id, current_user.id, data.message_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    receipt = _to_receipt(
+        current_user,
+        member.last_read_message_id if member else data.message_id,
+    )
+
+    # member is None when the watermark didn't move — everyone already knows
+    if member is not None:
+        payload = {
+            "event": "message_read",
+            "data": {"conversation_id": conversation_id, **receipt.model_dump()},
+        }
+        # Room-only: anyone opening this conversation later refetches GET /reads
+        await manager.broadcast(conversation_id=conversation_id, payload=payload)
+
+    return receipt
 
 
 @router.post("/send", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)

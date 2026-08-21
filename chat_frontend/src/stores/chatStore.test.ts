@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Conversation, Message, TypingEvent } from '../types';
+import type { Conversation, Message, ReadReceipt, TypingEvent } from '../types';
 
 vi.mock('../api/conversations', () => ({
   getConversations: vi.fn(),
@@ -7,10 +7,17 @@ vi.mock('../api/conversations', () => ({
 vi.mock('../api/messages', () => ({
   sendMessage: vi.fn(),
   getMessages: vi.fn(),
+  getReadReceipts: vi.fn(),
+  markRead: vi.fn(),
 }));
 
 import { getConversations } from '../api/conversations';
-import { sendMessage as apiSendMessage, getMessages } from '../api/messages';
+import {
+  sendMessage as apiSendMessage,
+  getMessages,
+  getReadReceipts,
+  markRead as apiMarkRead,
+} from '../api/messages';
 import { TYPING_TTL_MS, useChatStore } from './chatStore';
 
 class FakeWebSocket {
@@ -302,6 +309,110 @@ describe('receiveTyping', () => {
 
     const ids = useChatStore.getState().typing['conv-1'].map((u) => u.user_id);
     expect(ids).toEqual(['user-b']);
+  });
+});
+
+describe('read receipts', () => {
+  function makeReceipt(overrides: Partial<ReadReceipt> = {}): ReadReceipt {
+    return {
+      user_id: 'user-b',
+      username: 'bob',
+      full_name: 'Bob',
+      avatar_url: null,
+      last_read_message_id: 'm1',
+      ...overrides,
+    };
+  }
+
+  it('fetchReads stores every member watermark', async () => {
+    const receipts = [makeReceipt(), makeReceipt({ user_id: 'user-c', username: 'carol' })];
+    vi.mocked(getReadReceipts).mockResolvedValue(receipts);
+
+    await useChatStore.getState().fetchReads('conv-1');
+
+    expect(useChatStore.getState().reads['conv-1']).toEqual(receipts);
+  });
+
+  it('fetchReads swallows API errors, leaving the chat usable', async () => {
+    vi.mocked(getReadReceipts).mockRejectedValue(new Error('boom'));
+
+    await useChatStore.getState().fetchReads('conv-1');
+
+    expect(useChatStore.getState().reads['conv-1']).toBeUndefined();
+  });
+
+  it('receiveRead replaces that user’s watermark rather than appending', () => {
+    useChatStore.getState().receiveRead({ conversation_id: 'conv-1', ...makeReceipt() });
+    useChatStore
+      .getState()
+      .receiveRead({ conversation_id: 'conv-1', ...makeReceipt({ last_read_message_id: 'm7' }) });
+
+    expect(useChatStore.getState().reads['conv-1']).toEqual([makeReceipt({ last_read_message_id: 'm7' })]);
+  });
+
+  it('receiveRead keeps other members untouched', () => {
+    useChatStore.getState().receiveRead({ conversation_id: 'conv-1', ...makeReceipt() });
+    useChatStore
+      .getState()
+      .receiveRead({ conversation_id: 'conv-1', ...makeReceipt({ user_id: 'user-c', username: 'carol' }) });
+
+    expect(useChatStore.getState().reads['conv-1'].map((r) => r.user_id)).toEqual(['user-b', 'user-c']);
+  });
+
+  it('markRead calls the API once per message and records the result', async () => {
+    const mine = makeReceipt({ user_id: 'user-a', username: 'alice', last_read_message_id: 'm3' });
+    vi.mocked(apiMarkRead).mockResolvedValue(mine);
+
+    await useChatStore.getState().markRead('conv-1', 'm3');
+    await useChatStore.getState().markRead('conv-1', 'm3');
+
+    expect(apiMarkRead).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().reads['conv-1']).toEqual([mine]);
+  });
+
+  it('markRead calls the API again once the watermark moves on', async () => {
+    vi.mocked(apiMarkRead).mockResolvedValue(makeReceipt({ user_id: 'user-a' }));
+
+    await useChatStore.getState().markRead('conv-1', 'm3');
+    await useChatStore.getState().markRead('conv-1', 'm4');
+
+    expect(apiMarkRead).toHaveBeenCalledTimes(2);
+  });
+
+  it('markRead lets a failed attempt be retried', async () => {
+    vi.mocked(apiMarkRead).mockRejectedValueOnce(new Error('offline'));
+
+    await useChatStore.getState().markRead('conv-1', 'm3');
+    expect(useChatStore.getState().markedRead['conv-1']).toBeUndefined();
+
+    vi.mocked(apiMarkRead).mockResolvedValue(makeReceipt({ user_id: 'user-a' }));
+    await useChatStore.getState().markRead('conv-1', 'm3');
+
+    expect(apiMarkRead).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes a message_read event from the conversation socket', () => {
+    useChatStore.getState().connectWs('conv-1', 'token-a');
+    const socket = FakeWebSocket.instances[0];
+
+    socket.onmessage?.({
+      data: JSON.stringify({ event: 'message_read', data: { conversation_id: 'conv-1', ...makeReceipt() } }),
+    });
+
+    expect(useChatStore.getState().reads['conv-1']).toHaveLength(1);
+  });
+
+  // The user-level channel deliberately carries no receipts: the backend
+  // broadcasts them to the room only, and opening a conversation refetches
+  it('ignores a message_read event on the user socket', () => {
+    useChatStore.getState().connectUserWs('token-a');
+    const socket = FakeWebSocket.instances[0];
+
+    socket.onmessage?.({
+      data: JSON.stringify({ event: 'message_read', data: { conversation_id: 'conv-2', ...makeReceipt() } }),
+    });
+
+    expect(useChatStore.getState().reads['conv-2']).toBeUndefined();
   });
 });
 

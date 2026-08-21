@@ -7,11 +7,13 @@ import MessageBubble from './MessageBubble';
 import MessageInput from './MessageInput';
 import AddMembersModal from './AddMembersModal';
 import TypingIndicator from './TypingIndicator';
+import ReadReceipts from './ReadReceipts';
 import { typingLabel } from './typingLabel';
 import Avatar from '../ui/Avatar';
 
 export default function ChatWindow() {
-  const { activeConversationId, conversations, messages, loadingHistory, typing } = useChatStore();
+  const { activeConversationId, conversations, messages, loadingHistory, typing, reads, markRead } =
+    useChatStore();
   const { user } = useAuthStore();
   const { theme } = useThemeStore();
   const isDark = theme === 'dark';
@@ -39,9 +41,36 @@ export default function ChatWindow() {
   const typingUsers = activeConversationId ? (typing[activeConversationId] ?? []) : [];
   const isGroup = conversation?.type === 'group';
 
+  // Each member's watermark points at one message, so group them by that id
+  // and the avatars land under the last message each person has read
+  const currentReads = activeConversationId ? (reads[activeConversationId] ?? []) : [];
+  const readersByMessage = new Map<string, typeof currentReads>();
+  for (const receipt of currentReads) {
+    if (!receipt.last_read_message_id || receipt.user_id === user?.id) continue;
+    const existing = readersByMessage.get(receipt.last_read_message_id);
+    if (existing) existing.push(receipt);
+    else readersByMessage.set(receipt.last_read_message_id, [receipt]);
+  }
+
+  const lastMessageId = currentMessages[currentMessages.length - 1]?.id;
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentMessages.length, typingUsers.length]);
+
+  // Opening a conversation — or receiving a message while it's open — marks it
+  // read, but only while the tab is actually being looked at
+  useEffect(() => {
+    if (!activeConversationId || !lastMessageId) return;
+
+    const mark = () => {
+      if (document.visibilityState === 'visible') markRead(activeConversationId, lastMessageId);
+    };
+    mark();
+
+    document.addEventListener('visibilitychange', mark);
+    return () => document.removeEventListener('visibilitychange', mark);
+  }, [activeConversationId, lastMessageId, markRead]);
 
   const bg = isDark ? '#0f172a' : '#f0f4f8';
   const headerBg = isDark ? '#0f172a' : '#ffffff';
@@ -133,7 +162,10 @@ export default function ChatWindow() {
           </div>
         )}
         {currentMessages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <div key={msg.id}>
+            <MessageBubble message={msg} />
+            <ReadReceipts readers={readersByMessage.get(msg.id) ?? []} showLabel={!isGroup} />
+          </div>
         ))}
         <div ref={bottomRef} />
       </div>

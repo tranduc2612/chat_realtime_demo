@@ -35,6 +35,25 @@ class SendMessage(BaseModel):
     attachments: list[AttachmentCreate] = []
 
 
+class MarkRead(BaseModel):
+    message_id: str
+
+
+class ReadReceipt(BaseModel):
+    """How far one member has read in a conversation.
+
+    A single watermark per member rather than a row per (message, user):
+    "read up to here" answers both "did they see it?" and "who saw it?"
+    without growing with the message count.
+    """
+
+    user_id: str
+    username: str
+    full_name: Optional[str]
+    avatar_url: Optional[str]
+    last_read_message_id: Optional[str]
+
+
 class MessageResponse(BaseModel):
     id: str
     conversation_id: str

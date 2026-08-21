@@ -3,11 +3,12 @@ import { useState } from 'react';
 interface AvatarProps {
   src?: string | null;
   name?: string | null;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   online?: boolean;
 }
 
-const sizes = { sm: 'w-8 h-8', md: 'w-10 h-10', lg: 'w-14 h-14' };
+// xs is for read receipts, where several avatars sit under a message bubble
+const sizes = { xs: 'w-4 h-4', sm: 'w-8 h-8', md: 'w-10 h-10', lg: 'w-14 h-14' };
 
 function Silhouette() {
   return (

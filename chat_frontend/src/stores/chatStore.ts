@@ -1,7 +1,12 @@
 import { create } from 'zustand';
-import type { Conversation, Message, TypingEvent, TypingUser } from '../types';
+import type { Conversation, Message, ReadEvent, ReadReceipt, TypingEvent, TypingUser } from '../types';
 import { getConversations } from '../api/conversations';
-import { sendMessage as apiSend, getMessages } from '../api/messages';
+import {
+  sendMessage as apiSend,
+  getMessages,
+  getReadReceipts,
+  markRead as apiMarkRead,
+} from '../api/messages';
 import type { SendMessagePayload } from '../types';
 import { WS_BASE } from '../api/client';
 
@@ -16,6 +21,7 @@ export const TYPING_TTL_MS = 6000;
 // key: `${conversationId}:${userId}` — kept outside the store because timers
 // are not state and must not trigger re-renders.
 const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 
 function clearTypingTimer(key: string) {
   const timer = typingTimers.get(key);
@@ -34,6 +40,10 @@ interface ChatState {
   unread: Record<string, number>;
   /** conversation_id -> everyone currently typing in it, excluding yourself */
   typing: Record<string, TypingUser[]>;
+  /** conversation_id -> every member's read watermark, including your own */
+  reads: Record<string, ReadReceipt[]>;
+  /** conversation_id -> message id we last reported as read, to collapse repeat calls */
+  markedRead: Record<string, string>;
   ws: WebSocket | null;
   userWs: WebSocket | null;
 
@@ -44,6 +54,9 @@ interface ChatState {
   receiveMessage: (message: Message, fromOther?: boolean) => void;
   receiveTyping: (event: TypingEvent) => void;
   sendTyping: (isTyping: boolean) => void;
+  fetchReads: (conversationId: string) => Promise<void>;
+  receiveRead: (event: ReadEvent) => void;
+  markRead: (conversationId: string, messageId: string) => Promise<void>;
   connectWs: (conversationId: string, token: string) => void;
   disconnectWs: () => void;
   connectUserWs: (token: string) => void;
@@ -58,6 +71,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   historyLoaded: {},
   unread: {},
   typing: {},
+  reads: {},
+  markedRead: {},
   ws: null,
   userWs: null,
 
@@ -76,6 +91,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!get().historyLoaded[id]) {
       get().fetchHistory(id);
     }
+    // Watermarks move while you're away, so refetch on every open
+    get().fetchReads(id);
   },
 
   fetchHistory: async (conversationId) => {
@@ -184,6 +201,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  fetchReads: async (conversationId) => {
+    try {
+      const receipts = await getReadReceipts(conversationId);
+      set((s) => ({ reads: { ...s.reads, [conversationId]: receipts } }));
+    } catch {
+      // Read receipts are decoration — a failure here must not break the chat
+    }
+  },
+
+  receiveRead: ({ conversation_id: cid, ...receipt }) => {
+    set((state) => {
+      const current = state.reads[cid] ?? [];
+      const others = current.filter((r) => r.user_id !== receipt.user_id);
+      return { reads: { ...state.reads, [cid]: [...others, receipt] } };
+    });
+  },
+
+  markRead: async (conversationId, messageId) => {
+    // The server ignores a watermark that doesn't move forward; skip the round
+    // trip entirely when we already reported this message
+    if (get().markedRead[conversationId] === messageId) return;
+    set((s) => ({ markedRead: { ...s.markedRead, [conversationId]: messageId } }));
+
+    try {
+      const receipt = await apiMarkRead(conversationId, messageId);
+      get().receiveRead({ conversation_id: conversationId, ...receipt });
+    } catch {
+      // Let the next attempt retry rather than silently pinning the watermark
+      set((s) => {
+        const markedRead = { ...s.markedRead };
+        delete markedRead[conversationId];
+        return { markedRead };
+      });
+    }
+  },
+
   connectWs: (conversationId, token) => {
     const { ws } = get();
     if (ws) ws.close();
@@ -197,6 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const { event: evt, data } = JSON.parse(event.data);
         if (evt === 'new_message') get().receiveMessage(data as Message, false);
         else if (evt === 'typing') get().receiveTyping(data as TypingEvent);
+        else if (evt === 'message_read') get().receiveRead(data as ReadEvent);
       } catch {}
     };
 

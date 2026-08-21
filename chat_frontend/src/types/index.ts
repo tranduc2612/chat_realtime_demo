@@ -72,6 +72,19 @@ export interface TypingEvent extends TypingUser {
   is_typing: boolean;
 }
 
+/** How far one member has read — a watermark, not a row per message. */
+export interface ReadReceipt {
+  user_id: string;
+  username: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  last_read_message_id: string | null;
+}
+
+export interface ReadEvent extends ReadReceipt {
+  conversation_id: string;
+}
+
 export interface SendMessagePayload {
   conversation_id: string;
   type: MessageType;

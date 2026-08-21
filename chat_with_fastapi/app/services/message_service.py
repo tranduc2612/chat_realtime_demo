@@ -8,6 +8,7 @@ from app.models.conversation import Conversation
 from app.models.conversation_member import ConversationMember
 from app.models.message import Message
 from app.models.message_attachment import MessageAttachment
+from app.models.user import User
 from app.schemas.message import SendMessage
 
 
@@ -69,6 +70,64 @@ class MessageService:
         # Return in ascending order for display
         return list(reversed(result.scalars().all()))
 
+    async def get_read_receipts(
+        self, conversation_id: str, user_id: str
+    ) -> list[tuple[User, str | None]]:
+        """Every active member's read watermark, with their profile for display."""
+        member = await self.get_member(conversation_id, user_id)
+        if member is None:
+            raise PermissionError("User is not a member of this conversation")
+
+        result = await self.db.execute(
+            select(User, ConversationMember.last_read_message_id)
+            .join(ConversationMember, ConversationMember.user_id == User.id)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.left_at.is_(None),
+            )
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def mark_read(
+        self, conversation_id: str, user_id: str, message_id: str
+    ) -> ConversationMember | None:
+        """Advance a member's read watermark.
+
+        Returns None when nothing changed, so callers can skip broadcasting a
+        read receipt that tells other clients what they already know.
+        """
+        member = await self.get_member(conversation_id, user_id)
+        if member is None:
+            raise PermissionError("User is not a member of this conversation")
+
+        target_result = await self.db.execute(
+            select(Message.created_at).where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        target_ts = target_result.scalar_one_or_none()
+        if target_ts is None:
+            raise ValueError("Message does not belong to this conversation")
+
+        if member.last_read_message_id == message_id:
+            return None
+
+        if member.last_read_message_id is not None:
+            current_result = await self.db.execute(
+                select(Message.created_at).where(Message.id == member.last_read_message_id)
+            )
+            current_ts = current_result.scalar_one_or_none()
+            # Never walk the watermark backwards: clients scrolled up through
+            # history would otherwise "unread" messages they already saw
+            if current_ts is not None and current_ts >= target_ts:
+                return None
+
+        member.last_read_message_id = message_id
+        self.db.add(member)
+        await self.db.commit()
+        return member
+
     async def send(self, sender_id: str, data: SendMessage) -> Message:
         member = await self.get_member(data.conversation_id, sender_id)
         if member is None:
@@ -99,6 +158,11 @@ class MessageService:
                     duration_seconds=att.duration_seconds,
                 )
             )
+
+        # Sending is reading: keeps the sender's watermark from lagging behind
+        # their own messages (free here — the member row is already loaded)
+        member.last_read_message_id = message.id
+        self.db.add(member)
 
         # bump conversation's updated_at so it floats to top of lists
         conv_result = await self.db.execute(

@@ -108,11 +108,12 @@ SECRET_KEY=your-secret-key
 - `auth.py` — `POST /auth/login` (OAuth2 password form → JWT)
 - `user.py` — `POST /users/` (public registration), `GET /users/search?q=`, `GET|PUT /users/me`, `DELETE /users/disable/{id}`
 - `conversation.py` — `GET /conversations`, `POST /conversations` (creates group, or reuses an existing direct conversation between the two users), `POST /conversations/{id}/members`
-- `message.py` — `GET /messages/{conversation_id}` (paginated history via `before_id`), `POST /messages/send`, plus the two WebSocket endpoints below
+- `message.py` — `GET /messages/{conversation_id}` (paginated history via `before_id`), `POST /messages/send`, `GET /messages/{conversation_id}/reads` + `POST /messages/{conversation_id}/read` (read receipts, below), plus the two WebSocket endpoints below
 
 **Messaging & WebSocket flow:**
 - `POST /api/v1/messages/send` — saves `Message` + attachments, bumps `Conversation.updated_at`, then broadcasts `{"event": "new_message", "data": {...}}` twice: to conversation-room sockets via `manager.broadcast()` and to every member's user-level channel via `manager.notify_users()` (so members not currently viewing that conversation still get notified)
 - `WS /api/v1/messages/ws/{conversation_id}?token=<jwt>` — validates token + conversation membership on connect; joins the conversation room
+- **Read receipts ("seen")** use `ConversationMember.last_read_message_id` as a per-member *watermark* — "read up to here" — rather than a row per (message, user). That answers both "did they see it?" and, in a group, "who saw it?" in one row per member instead of growing with the message count, which is why the `MessageRead` table stays unused. `POST /messages/{id}/read` `{message_id}` advances it (never backwards — clients scrolled up through history would otherwise un-read messages), and broadcasts `{"event": "message_read", "data": {conversation_id, user_id, username, full_name, avatar_url, last_read_message_id}}` to the room only — unlike `send_message`, there is no user-channel fan-out, because a receipt only matters to someone currently looking at that conversation and anyone opening it later refetches `GET /reads` (fanning out would cost one Redis publish per member for something nobody would see). `MessageService.send()` also advances the sender's own watermark in the same transaction. Only a watermark that actually moved is broadcast. The frontend groups receipts by `last_read_message_id`, so each reader's avatar renders under the last message they read
 - **Typing indicators** ride *up* the same room socket — the only frames a client sends. `{"event": "typing", "data": {"is_typing": true|false}}` is broadcast back out to the room as `{"event": "typing", "data": {conversation_id, user_id, username, full_name, avatar_url, is_typing}}` (the identity fields come straight off the `User` already loaded for the socket's auth check, so the client can render an avatar without a second lookup), with `broadcast(..., exclude_user_id=...)` skipping the sender's own sockets. Anything else sent up the socket (including non-JSON keepalives) is ignored rather than closing the connection. A disconnect auto-broadcasts `is_typing: false`, since a client that closes mid-typing never gets to retract it; the frontend additionally expires a stale flag after `TYPING_TTL_MS` (`chatStore.ts`) in case even that is lost
 - `WS /api/v1/messages/ws/user/me?token=<jwt>` — user-level channel that receives `new_message` events for every conversation the user belongs to (used to update the sidebar/unread state outside the currently open conversation)
 
@@ -166,7 +167,7 @@ Use `bg-primary`, `bg-secondary`, `text-primary` etc. (Tailwind utility classes 
 
 **State management (Zustand):**
 - `src/stores/authStore.ts` — `token`, `user`; `login()`, `logout()`, `fetchMe()`; persisted to `localStorage` via `zustand/middleware persist`
-- `src/stores/chatStore.ts` — `conversations`, `activeConversationId`, `messages` (keyed by `conversation_id`), `typing` (`conversation_id → TypingUser[]`, excluding yourself), `ws`; `connectWs()` opens a WebSocket and wires `new_message` events to `receiveMessage()` and `typing` events to `receiveTyping()`; `sendMessage()` calls the REST API and deduplicates against incoming WS events; `sendTyping()` pushes your own typing state up the room socket (throttled by `MessageInput`, which re-announces at most every 2.5s and retracts after 2.5s idle)
+- `src/stores/chatStore.ts` — `conversations`, `activeConversationId`, `messages` (keyed by `conversation_id`), `typing` (`conversation_id → TypingUser[]`, excluding yourself), `ws`; `connectWs()` opens a WebSocket and wires `new_message` events to `receiveMessage()` and `typing` events to `receiveTyping()`; `sendMessage()` calls the REST API and deduplicates against incoming WS events; `sendTyping()` pushes your own typing state up the room socket (throttled by `MessageInput`, which re-announces at most every 2.5s and retracts after 2.5s idle); `reads` (`conversation_id → ReadReceipt[]`) plus `fetchReads`/`receiveRead`/`markRead` hold read watermarks, with `markedRead` collapsing the repeat `markRead` calls that fire as messages arrive while a conversation stays open
 - `src/stores/themeStore.ts` — see above
 
 **File layout:**
@@ -174,7 +175,7 @@ Use `bg-primary`, `bg-secondary`, `text-primary` etc. (Tailwind utility classes 
 - `src/types/index.ts` — all shared TypeScript interfaces (`User`, `Message`, `Conversation`, `Attachment`, etc.)
 - `src/hooks/useDebounce.ts` — used to debounce the user-search input
 - `src/components/ui/` — reusable primitives (`Avatar`, `ThemeToggle`)
-- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`, `TypingIndicator` + its `typingLabel` helper, `AddMembersModal`, `CreateGroupModal`, `UserSearchDropdown`). `TypingIndicator` renders *outside* `ChatWindow`'s scroll container, pinned between it and `MessageInput`, so it stays at the bottom of the chat frame regardless of message count or scroll position
+- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`, `TypingIndicator` + its `typingLabel` helper, `ReadReceipts`, `AddMembersModal`, `CreateGroupModal`, `UserSearchDropdown`). `TypingIndicator` renders *outside* `ChatWindow`'s scroll container, pinned between it and `MessageInput`, so it stays at the bottom of the chat frame regardless of message count or scroll position
 - `src/pages/` — route-level pages (`LoginPage`, `RegisterPage`, `ChatPage`)
 - `src/App.tsx` — `BrowserRouter` + `RequireAuth`/`RedirectIfAuth` guards; routes: `/login`, `/register`, `/`
 
@@ -200,4 +201,5 @@ npm run test:ui     # playwright test --ui
 - `tests/messaging.spec.ts` — start a direct conversation, send a message, survives reload
 - `tests/groups.spec.ts` — create a group, send a message, add another member
 - `tests/realtime.spec.ts` — a message sent by one user appears live for another with no reload (exercises the WebSocket/Redis pub-sub path end-to-end)
+- `tests/read-receipts.spec.ts` — a direct message flips to "Seen" live when the recipient opens the conversation, and a group message shows the avatar of the member who read it while a member who didn't stays absent
 - `tests/typing.spec.ts` — one user's typing shows up live for the other (and is never echoed to the sender), clearing both when the input is emptied and when the message is sent
