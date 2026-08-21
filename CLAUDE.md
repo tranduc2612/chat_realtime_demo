@@ -113,9 +113,10 @@ SECRET_KEY=your-secret-key
 **Messaging & WebSocket flow:**
 - `POST /api/v1/messages/send` — saves `Message` + attachments, bumps `Conversation.updated_at`, then broadcasts `{"event": "new_message", "data": {...}}` twice: to conversation-room sockets via `manager.broadcast()` and to every member's user-level channel via `manager.notify_users()` (so members not currently viewing that conversation still get notified)
 - `WS /api/v1/messages/ws/{conversation_id}?token=<jwt>` — validates token + conversation membership on connect; joins the conversation room
+- **Typing indicators** ride *up* the same room socket — the only frames a client sends. `{"event": "typing", "data": {"is_typing": true|false}}` is broadcast back out to the room as `{"event": "typing", "data": {conversation_id, user_id, username, full_name, avatar_url, is_typing}}` (the identity fields come straight off the `User` already loaded for the socket's auth check, so the client can render an avatar without a second lookup), with `broadcast(..., exclude_user_id=...)` skipping the sender's own sockets. Anything else sent up the socket (including non-JSON keepalives) is ignored rather than closing the connection. A disconnect auto-broadcasts `is_typing: false`, since a client that closes mid-typing never gets to retract it; the frontend additionally expires a stale flag after `TYPING_TTL_MS` (`chatStore.ts`) in case even that is lost
 - `WS /api/v1/messages/ws/user/me?token=<jwt>` — user-level channel that receives `new_message` events for every conversation the user belongs to (used to update the sidebar/unread state outside the currently open conversation)
 
-**Realtime architecture (Redis Pub/Sub):** `app/core/websocket.py`'s singleton `ConnectionManager` keeps locally-connected sockets in per-process dicts (`_rooms`: `conversation_id → [(user_id, WebSocket)]`, `_users`: `user_id → [WebSocket]`), but `broadcast()`/`notify_user()` never write to those sockets directly — they `PUBLISH` a JSON envelope (`{"scope": "room"|"user", "target": ..., "payload": ...}`) to a single Redis channel (`ws:events`). A background task (started in `main.py`'s `lifespan`) subscribes to that channel and delivers to whichever local sockets match, in *every* running process. This is what lets a message sent to any uvicorn worker/replica reach sockets connected to any other worker/replica — the connection manager is no longer single-process-only, which is what makes horizontally scaling the backend behind a load balancer possible.
+**Realtime architecture (Redis Pub/Sub):** `app/core/websocket.py`'s singleton `ConnectionManager` keeps locally-connected sockets in per-process dicts (`_rooms`: `conversation_id → [(user_id, WebSocket)]`, `_users`: `user_id → [WebSocket]`), but `broadcast()`/`notify_user()` never write to those sockets directly — they `PUBLISH` a JSON envelope (`{"scope": "room"|"user", "target": ..., "payload": ...}`) to a single Redis channel (`ws:events`). A background task (started in `main.py`'s `lifespan`) subscribes to that channel and delivers to whichever local sockets match, in *every* running process. That listener is the *only* thing delivering realtime events in its process and nothing restarts it, so its loop deliberately swallows and logs per-event exceptions — an escaping error would silently kill every WebSocket update until the process restarts. Relatedly, the delivery helpers prune dead sockets by rebuilding the list rather than `list.remove()`: a socket's own `disconnect()` can prune it first while a send is awaiting, and `remove()` would then raise on the missing entry. This is what lets a message sent to any uvicorn worker/replica reach sockets connected to any other worker/replica — the connection manager is no longer single-process-only, which is what makes horizontally scaling the backend behind a load balancer possible.
 
 **Auth:** `POST /api/v1/auth/login` accepts `OAuth2PasswordRequestForm`, returns JWT. `get_current_user` dep decodes token and loads `User` each request.
 
@@ -125,7 +126,7 @@ SECRET_KEY=your-secret-key
 
 **Error tracking (Sentry):** gated entirely on `SENTRY_DSN` (`app/core/config.py`) being set — unset (the default) means `sentry_sdk.init()` in `main.py` never runs, so dev stays silent unless you opt in. `release` is set to `settings.APP_VERSION` (the same VERSION-file-driven value used everywhere else), `environment` to `SENTRY_ENVIRONMENT` (`development`/`staging`/`production`, defaulted per compose file). FastAPI/Starlette/SQLAlchemy/Redis integrations are auto-detected — no explicit `integrations=[...]` list needed. Frontend mirrors this: `VITE_SENTRY_DSN` gates `Sentry.init()` in `main.tsx`, same `release`/`environment` convention, plus a `Sentry.ErrorBoundary` wrapping `<App />` for uncaught render errors.
 
-**Tests:** `chat_with_fastapi/tests/services/` — unit tests for the service layer, using `unittest.mock.MagicMock(spec=AsyncSession)` (see `tests/conftest.py`'s `mock_db`/`make_result` fixtures). No real database required; run via `make test` / `pytest` (coverage configured in `pytest.ini`).
+**Tests:** `chat_with_fastapi/tests/services/` — unit tests for the service layer, using `unittest.mock.MagicMock(spec=AsyncSession)` (see `tests/conftest.py`'s `mock_db`/`make_result` fixtures). `chat_with_fastapi/tests/api/test_typing_events.py` covers what sits outside that layer: the WebSocket frame parser and the connection manager's room delivery (sender exclusion, dead-socket pruning). No real database required; run via `make test` / `pytest` (coverage configured in `pytest.ini`).
 
 ---
 
@@ -165,7 +166,7 @@ Use `bg-primary`, `bg-secondary`, `text-primary` etc. (Tailwind utility classes 
 
 **State management (Zustand):**
 - `src/stores/authStore.ts` — `token`, `user`; `login()`, `logout()`, `fetchMe()`; persisted to `localStorage` via `zustand/middleware persist`
-- `src/stores/chatStore.ts` — `conversations`, `activeConversationId`, `messages` (keyed by `conversation_id`), `ws`; `connectWs()` opens a WebSocket and wires `new_message` events to `receiveMessage()`; `sendMessage()` calls the REST API and deduplicates against incoming WS events
+- `src/stores/chatStore.ts` — `conversations`, `activeConversationId`, `messages` (keyed by `conversation_id`), `typing` (`conversation_id → TypingUser[]`, excluding yourself), `ws`; `connectWs()` opens a WebSocket and wires `new_message` events to `receiveMessage()` and `typing` events to `receiveTyping()`; `sendMessage()` calls the REST API and deduplicates against incoming WS events; `sendTyping()` pushes your own typing state up the room socket (throttled by `MessageInput`, which re-announces at most every 2.5s and retracts after 2.5s idle)
 - `src/stores/themeStore.ts` — see above
 
 **File layout:**
@@ -173,7 +174,7 @@ Use `bg-primary`, `bg-secondary`, `text-primary` etc. (Tailwind utility classes 
 - `src/types/index.ts` — all shared TypeScript interfaces (`User`, `Message`, `Conversation`, `Attachment`, etc.)
 - `src/hooks/useDebounce.ts` — used to debounce the user-search input
 - `src/components/ui/` — reusable primitives (`Avatar`, `ThemeToggle`)
-- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`, `AddMembersModal`, `CreateGroupModal`, `UserSearchDropdown`)
+- `src/components/chat/` — feature components (`ConversationList`, `ChatWindow`, `MessageBubble`, `MessageInput`, `TypingIndicator` + its `typingLabel` helper, `AddMembersModal`, `CreateGroupModal`, `UserSearchDropdown`). `TypingIndicator` renders *outside* `ChatWindow`'s scroll container, pinned between it and `MessageInput`, so it stays at the bottom of the chat frame regardless of message count or scroll position
 - `src/pages/` — route-level pages (`LoginPage`, `RegisterPage`, `ChatPage`)
 - `src/App.tsx` — `BrowserRouter` + `RequireAuth`/`RedirectIfAuth` guards; routes: `/login`, `/register`, `/`
 
@@ -199,3 +200,4 @@ npm run test:ui     # playwright test --ui
 - `tests/messaging.spec.ts` — start a direct conversation, send a message, survives reload
 - `tests/groups.spec.ts` — create a group, send a message, add another member
 - `tests/realtime.spec.ts` — a message sent by one user appears live for another with no reload (exercises the WebSocket/Redis pub-sub path end-to-end)
+- `tests/typing.spec.ts` — one user's typing shows up live for the other (and is never echoed to the sender), clearing both when the input is emptied and when the message is sent

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Conversation, Message } from '../types';
+import type { Conversation, Message, TypingEvent } from '../types';
 
 vi.mock('../api/conversations', () => ({
   getConversations: vi.fn(),
@@ -11,7 +11,7 @@ vi.mock('../api/messages', () => ({
 
 import { getConversations } from '../api/conversations';
 import { sendMessage as apiSendMessage, getMessages } from '../api/messages';
-import { useChatStore } from './chatStore';
+import { TYPING_TTL_MS, useChatStore } from './chatStore';
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -30,7 +30,10 @@ class FakeWebSocket {
     this.onclose?.();
   }
 
-  send() {}
+  sent: string[] = [];
+  send(data: string) {
+    this.sent.push(data);
+  }
 }
 
 const initialState = useChatStore.getInitialState();
@@ -47,6 +50,18 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
     attachments: [],
+    ...overrides,
+  };
+}
+
+function makeTypingEvent(overrides: Partial<TypingEvent> = {}): TypingEvent {
+  return {
+    conversation_id: 'conv-1',
+    user_id: 'user-a',
+    username: 'alice',
+    full_name: 'Alice',
+    avatar_url: null,
+    is_typing: true,
     ...overrides,
   };
 }
@@ -208,13 +223,24 @@ describe('connectWs', () => {
     expect(() => socket.onmessage?.({ data: 'not json' })).not.toThrow();
   });
 
-  it('ignores events other than new_message', () => {
+  it('ignores unknown events', () => {
     useChatStore.getState().connectWs('conv-1', 'token-a');
     const socket = FakeWebSocket.instances[0];
 
-    socket.onmessage?.({ data: JSON.stringify({ event: 'typing', data: {} }) });
+    socket.onmessage?.({ data: JSON.stringify({ event: 'something_else', data: {} }) });
 
     expect(useChatStore.getState().messages['conv-1'] ?? []).toHaveLength(0);
+  });
+
+  it('routes an incoming typing event into typing state', () => {
+    useChatStore.getState().connectWs('conv-1', 'token-a');
+    const socket = FakeWebSocket.instances[0];
+
+    socket.onmessage?.({ data: JSON.stringify({ event: 'typing', data: makeTypingEvent() }) });
+
+    expect(useChatStore.getState().typing['conv-1']).toEqual([
+      { user_id: 'user-a', username: 'alice', full_name: 'Alice', avatar_url: null },
+    ]);
   });
 
   it('clears ws state on close', () => {
@@ -224,6 +250,80 @@ describe('connectWs', () => {
     socket.close();
 
     expect(useChatStore.getState().ws).toBeNull();
+  });
+});
+
+describe('receiveTyping', () => {
+  it('adds and removes a user for the right conversation', () => {
+    useChatStore.getState().receiveTyping(makeTypingEvent());
+    expect(useChatStore.getState().typing['conv-1']).toHaveLength(1);
+
+    useChatStore.getState().receiveTyping(makeTypingEvent({ is_typing: false }));
+    expect(useChatStore.getState().typing['conv-1']).toHaveLength(0);
+  });
+
+  it('tracks multiple users without duplicating a repeated heartbeat', () => {
+    useChatStore.getState().receiveTyping(makeTypingEvent({ user_id: 'user-a' }));
+    useChatStore.getState().receiveTyping(makeTypingEvent({ user_id: 'user-b', username: 'bob' }));
+    useChatStore.getState().receiveTyping(makeTypingEvent({ user_id: 'user-a' })); // heartbeat
+
+    const ids = useChatStore.getState().typing['conv-1'].map((u) => u.user_id);
+    expect(ids).toEqual(['user-a', 'user-b']);
+  });
+
+  it('keeps the same state object for a repeated heartbeat', () => {
+    useChatStore.getState().receiveTyping(makeTypingEvent());
+    const before = useChatStore.getState().typing;
+
+    useChatStore.getState().receiveTyping(makeTypingEvent());
+
+    expect(useChatStore.getState().typing).toBe(before);
+  });
+
+  it('expires a stale typing flag after the TTL when no stop event arrives', () => {
+    vi.useFakeTimers();
+    try {
+      useChatStore.getState().receiveTyping(makeTypingEvent());
+      expect(useChatStore.getState().typing['conv-1']).toHaveLength(1);
+
+      vi.advanceTimersByTime(TYPING_TTL_MS + 1);
+
+      expect(useChatStore.getState().typing['conv-1']).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the typing flag when that user’s message arrives', () => {
+    useChatStore.getState().receiveTyping(makeTypingEvent({ user_id: 'user-a' }));
+    useChatStore.getState().receiveTyping(makeTypingEvent({ user_id: 'user-b', username: 'bob' }));
+
+    useChatStore.getState().receiveMessage(makeMessage({ sender_id: 'user-a' }), true);
+
+    const ids = useChatStore.getState().typing['conv-1'].map((u) => u.user_id);
+    expect(ids).toEqual(['user-b']);
+  });
+});
+
+describe('sendTyping', () => {
+  it('sends a typing frame up the conversation socket', () => {
+    useChatStore.getState().connectWs('conv-1', 'token-a');
+    useChatStore.setState({ activeConversationId: 'conv-1' });
+
+    useChatStore.getState().sendTyping(true);
+
+    expect(FakeWebSocket.instances[0].sent).toEqual([
+      JSON.stringify({ event: 'typing', data: { is_typing: true } }),
+    ]);
+  });
+
+  it('is a no-op with no socket or no active conversation', () => {
+    expect(() => useChatStore.getState().sendTyping(true)).not.toThrow();
+
+    useChatStore.getState().connectWs('conv-1', 'token-a'); // activeConversationId still null
+    useChatStore.getState().sendTyping(true);
+
+    expect(FakeWebSocket.instances[0].sent).toEqual([]);
   });
 });
 

@@ -6,10 +6,12 @@ import { useThemeStore } from '../../stores/themeStore';
 import MessageBubble from './MessageBubble';
 import MessageInput from './MessageInput';
 import AddMembersModal from './AddMembersModal';
+import TypingIndicator from './TypingIndicator';
+import { typingLabel } from './typingLabel';
 import Avatar from '../ui/Avatar';
 
 export default function ChatWindow() {
-  const { activeConversationId, conversations, messages, loadingHistory } = useChatStore();
+  const { activeConversationId, conversations, messages, loadingHistory, typing } = useChatStore();
   const { user } = useAuthStore();
   const { theme } = useThemeStore();
   const isDark = theme === 'dark';
@@ -34,9 +36,12 @@ export default function ChatWindow() {
 
   const isOnline = conversation?.type === 'direct' ? (other?.is_online ?? false) : false;
 
+  const typingUsers = activeConversationId ? (typing[activeConversationId] ?? []) : [];
+  const isGroup = conversation?.type === 'group';
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentMessages.length]);
+  }, [currentMessages.length, typingUsers.length]);
 
   const bg = isDark ? '#0f172a' : '#f0f4f8';
   const headerBg = isDark ? '#0f172a' : '#ffffff';
@@ -75,11 +80,15 @@ export default function ChatWindow() {
           <Avatar name={displayName} src={displayAvatar} size="md" online={isOnline} />
           <div>
             <p className={`font-semibold text-sm ${isDark ? 'text-white' : 'text-slate-800'}`}>{displayName}</p>
-            <p className={`text-xs ${isOnline ? 'text-green-500' : isDark ? 'text-white/30' : 'text-slate-400'}`}>
-              {conversation?.type === 'direct'
-                ? isOnline ? '● Online' : 'Offline'
-                : `${conversation?.members?.length ?? 0} members`}
-            </p>
+            {typingUsers.length > 0 ? (
+              <p className="text-xs italic text-brand-strong">{typingLabel(typingUsers, isGroup)}</p>
+            ) : (
+              <p className={`text-xs ${isOnline ? 'text-green-500' : isDark ? 'text-white/30' : 'text-slate-400'}`}>
+                {conversation?.type === 'direct'
+                  ? isOnline ? '● Online' : 'Offline'
+                  : `${conversation?.members?.length ?? 0} members`}
+              </p>
+            )}
           </div>
         </div>
 
@@ -128,6 +137,14 @@ export default function ChatWindow() {
         ))}
         <div ref={bottomRef} />
       </div>
+
+      {/* Pinned outside the scroll container, directly above the composer, so it
+          stays put whether the conversation is empty or scrolled up through history */}
+      {typingUsers.length > 0 && (
+        <div className="flex-shrink-0 px-4 pb-1 transition-colors duration-300" style={{ background: bg }}>
+          <TypingIndicator users={typingUsers} showNames={isGroup} />
+        </div>
+      )}
 
       <MessageInput />
     </div>

@@ -1,20 +1,73 @@
-import { useState, useRef, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useState, useRef, type KeyboardEvent } from 'react';
 import { SmileyIcon, PaperclipIcon, PaperPlaneTiltIcon, CircleNotchIcon } from '@phosphor-icons/react';
 import { useChatStore } from '../../stores/chatStore';
 import { useThemeStore } from '../../stores/themeStore';
 
+/** Don't re-announce "still typing" more often than this while keys keep coming. */
+const TYPING_HEARTBEAT_MS = 2500;
+/** Announce "stopped typing" after this long without a keystroke. */
+const TYPING_IDLE_MS = 2500;
+
 export default function MessageInput() {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const { activeConversationId, sendMessage } = useChatStore();
+  const { activeConversationId, sendMessage, sendTyping } = useChatStore();
   const { theme } = useThemeStore();
   const isDark = theme === 'dark';
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const isTypingRef = useRef(false);
+  const lastSentAtRef = useRef(0);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopTyping = useCallback(() => {
+    if (idleTimerRef.current !== null) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    if (!isTypingRef.current) return;
+    isTypingRef.current = false;
+    lastSentAtRef.current = 0;
+    sendTyping(false);
+  }, [sendTyping]);
+
+  const handleChange = (value: string) => {
+    setText(value);
+
+    if (!value.trim()) {
+      stopTyping();
+      return;
+    }
+
+    const now = Date.now();
+    if (!isTypingRef.current || now - lastSentAtRef.current >= TYPING_HEARTBEAT_MS) {
+      isTypingRef.current = true;
+      lastSentAtRef.current = now;
+      sendTyping(true);
+    }
+
+    if (idleTimerRef.current !== null) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(stopTyping, TYPING_IDLE_MS);
+  };
+
+  // Switching conversations closes the old socket, and the backend broadcasts
+  // the stop on disconnect — so just drop local state, don't send on the new one
+  useEffect(() => {
+    if (idleTimerRef.current !== null) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    isTypingRef.current = false;
+    lastSentAtRef.current = 0;
+  }, [activeConversationId]);
+
+  useEffect(() => () => stopTyping(), [stopTyping]);
 
   const handleSend = async () => {
     const content = text.trim();
     if (!content || !activeConversationId || sending) return;
 
+    stopTyping();
     setSending(true);
     try {
       await sendMessage({ conversation_id: activeConversationId, type: 'text', content });
@@ -62,7 +115,7 @@ export default function MessageInput() {
           ref={textareaRef}
           rows={1}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
           className={`flex-1 resize-none outline-none text-sm max-h-32 py-0.5 bg-transparent transition-colors ${

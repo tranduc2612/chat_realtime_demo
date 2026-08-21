@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -5,6 +7,7 @@ from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.core.websocket import manager
 from app.api.deps import CurrentUser
+from app.models.user import User
 from app.schemas.message import MessageResponse, SendMessage
 from app.services.message_service import MessageService
 from app.services.user_service import UserService
@@ -53,6 +56,44 @@ async def send_message(
     return response
 
 
+async def _broadcast_typing(conversation_id: str, user: User, is_typing: bool) -> None:
+    """Tell everyone else in the room whether `user` is currently typing."""
+    await manager.broadcast(
+        conversation_id=conversation_id,
+        payload={
+            "event": "typing",
+            "data": {
+                "conversation_id": conversation_id,
+                "user_id": user.id,
+                "username": user.username,
+                "full_name": user.full_name,
+                "avatar_url": user.avatar_url,
+                "is_typing": is_typing,
+            },
+        },
+        exclude_user_id=user.id,
+    )
+
+
+async def _handle_client_frame(raw: str, conversation_id: str, user: User) -> None:
+    """Handle a frame sent *up* the room socket.
+
+    Only `typing` is understood; anything else (including non-JSON keepalive
+    pings) is ignored rather than closing the socket.
+    """
+    try:
+        frame = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    if not isinstance(frame, dict) or frame.get("event") != "typing":
+        return
+
+    data = frame.get("data")
+    is_typing = bool(data.get("is_typing")) if isinstance(data, dict) else False
+    await _broadcast_typing(conversation_id, user, is_typing)
+
+
 @router.websocket("/ws/{conversation_id}")
 async def websocket_conversation(
     conversation_id: str,
@@ -81,9 +122,13 @@ async def websocket_conversation(
     await manager.connect(conversation_id, user_id, websocket)
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            await _handle_client_frame(raw, conversation_id, user)
     except WebSocketDisconnect:
         manager.disconnect(conversation_id, user_id, websocket)
+        # A client that closes mid-typing never gets to send is_typing=false,
+        # so retract it here — otherwise the indicator sticks on other screens.
+        await _broadcast_typing(conversation_id, user, is_typing=False)
 
 
 @router.websocket("/ws/user/me")

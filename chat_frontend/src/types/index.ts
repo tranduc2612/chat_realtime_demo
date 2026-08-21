@@ -60,6 +60,18 @@ export interface Conversation {
   members: ConversationMemberProfile[];
 }
 
+export interface TypingUser {
+  user_id: string;
+  username: string;
+  full_name: string | null;
+  avatar_url: string | null;
+}
+
+export interface TypingEvent extends TypingUser {
+  conversation_id: string;
+  is_typing: boolean;
+}
+
 export interface SendMessagePayload {
   conversation_id: string;
   type: MessageType;

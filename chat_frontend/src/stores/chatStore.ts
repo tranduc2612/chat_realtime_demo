@@ -1,9 +1,29 @@
 import { create } from 'zustand';
-import type { Conversation, Message } from '../types';
+import type { Conversation, Message, TypingEvent, TypingUser } from '../types';
 import { getConversations } from '../api/conversations';
 import { sendMessage as apiSend, getMessages } from '../api/messages';
 import type { SendMessagePayload } from '../types';
 import { WS_BASE } from '../api/client';
+
+/**
+ * How long a "user is typing" flag survives without a refresh. The sender
+ * re-sends every TYPING_HEARTBEAT_MS while still typing (see MessageInput),
+ * so this only fires when their stop event never arrives — tab crashed,
+ * network dropped — and stops the indicator from sticking forever.
+ */
+export const TYPING_TTL_MS = 6000;
+
+// key: `${conversationId}:${userId}` — kept outside the store because timers
+// are not state and must not trigger re-renders.
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearTypingTimer(key: string) {
+  const timer = typingTimers.get(key);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    typingTimers.delete(key);
+  }
+}
 
 interface ChatState {
   conversations: Conversation[];
@@ -12,6 +32,8 @@ interface ChatState {
   loadingHistory: Record<string, boolean>;
   historyLoaded: Record<string, boolean>;
   unread: Record<string, number>;
+  /** conversation_id -> everyone currently typing in it, excluding yourself */
+  typing: Record<string, TypingUser[]>;
   ws: WebSocket | null;
   userWs: WebSocket | null;
 
@@ -20,6 +42,8 @@ interface ChatState {
   fetchHistory: (conversationId: string) => Promise<void>;
   sendMessage: (payload: SendMessagePayload) => Promise<void>;
   receiveMessage: (message: Message, fromOther?: boolean) => void;
+  receiveTyping: (event: TypingEvent) => void;
+  sendTyping: (isTyping: boolean) => void;
   connectWs: (conversationId: string, token: string) => void;
   disconnectWs: () => void;
   connectUserWs: (token: string) => void;
@@ -33,6 +57,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadingHistory: {},
   historyLoaded: {},
   unread: {},
+  typing: {},
   ws: null,
   userWs: null,
 
@@ -84,6 +109,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   receiveMessage: (message, fromOther = false) => {
+    // Sending a message ends typing — don't wait for the stop event or the TTL
+    if (message.sender_id) {
+      clearTypingTimer(`${message.conversation_id}:${message.sender_id}`);
+    }
+
     set((state) => {
       const cid = message.conversation_id;
       const existing = state.messages[cid] ?? [];
@@ -91,9 +121,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const isActive = state.activeConversationId === cid;
       const prevUnread = state.unread[cid] ?? 0;
+      const stillTyping = (state.typing[cid] ?? []).filter((u) => u.user_id !== message.sender_id);
 
       return {
         messages: { ...state.messages, [cid]: [...existing, message] },
+        typing: { ...state.typing, [cid]: stillTyping },
         conversations: state.conversations
           .map((c) => (c.id === cid ? { ...c, updated_at: message.created_at } : c))
           .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
@@ -104,6 +136,52 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       };
     });
+  },
+
+  receiveTyping: ({ conversation_id: cid, user_id, username, full_name, avatar_url, is_typing }) => {
+    const key = `${cid}:${user_id}`;
+    clearTypingTimer(key);
+
+    if (is_typing) {
+      // Self-expire in case the matching stop event never arrives
+      typingTimers.set(
+        key,
+        setTimeout(() => {
+          typingTimers.delete(key);
+          get().receiveTyping({
+            conversation_id: cid,
+            user_id,
+            username,
+            full_name,
+            avatar_url,
+            is_typing: false,
+          });
+        }, TYPING_TTL_MS)
+      );
+    }
+
+    set((state) => {
+      const current = state.typing[cid] ?? [];
+      const others = current.filter((u) => u.user_id !== user_id);
+      const wasTyping = others.length !== current.length;
+
+      // Already in the desired state — return the same object so subscribers
+      // don't re-render on every heartbeat frame
+      if (wasTyping === is_typing) return state;
+
+      const next = is_typing ? [...others, { user_id, username, full_name, avatar_url }] : others;
+      return { typing: { ...state.typing, [cid]: next } };
+    });
+  },
+
+  sendTyping: (isTyping) => {
+    const { ws, activeConversationId } = get();
+    if (!ws || !activeConversationId) return;
+    try {
+      ws.send(JSON.stringify({ event: 'typing', data: { is_typing: isTyping } }));
+    } catch {
+      // Socket not open (yet) — typing is best-effort, the next keystroke retries
+    }
   },
 
   connectWs: (conversationId, token) => {
@@ -118,6 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const { event: evt, data } = JSON.parse(event.data);
         if (evt === 'new_message') get().receiveMessage(data as Message, false);
+        else if (evt === 'typing') get().receiveTyping(data as TypingEvent);
       } catch {}
     };
 

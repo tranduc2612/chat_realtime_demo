@@ -13,13 +13,14 @@ import { useChatStore } from '../../stores/chatStore';
 import { useThemeStore } from '../../stores/themeStore';
 import MessageInput from './MessageInput';
 
-function setup(sendMessage = vi.fn().mockResolvedValue(undefined)) {
+function setup(sendMessage = vi.fn().mockResolvedValue(undefined), sendTyping = vi.fn()) {
   vi.mocked(useChatStore).mockReturnValue({
     activeConversationId: 'conv-1',
     sendMessage,
+    sendTyping,
   } as unknown as ReturnType<typeof useChatStore>);
   vi.mocked(useThemeStore).mockReturnValue({ theme: 'light' } as ReturnType<typeof useThemeStore>);
-  return { sendMessage };
+  return { sendMessage, sendTyping };
 }
 
 beforeEach(() => {
@@ -59,6 +60,30 @@ describe('MessageInput', () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(textarea).toHaveValue('line1\nline2');
+  });
+
+  it('announces typing once for a burst of keystrokes, then stops when the box is cleared', async () => {
+    const { sendTyping } = setup();
+    render(<MessageInput />);
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText('Type a message...');
+
+    await user.type(textarea, 'hello');
+    // One announcement for the whole burst — the heartbeat only re-fires after 2.5s
+    expect(sendTyping.mock.calls).toEqual([[true]]);
+
+    await user.clear(textarea);
+    expect(sendTyping.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('stops typing when the message is sent', async () => {
+    const { sendTyping } = setup();
+    render(<MessageInput />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText('Type a message...'), 'hello{Enter}');
+
+    expect(sendTyping.mock.calls).toEqual([[true], [false]]);
   });
 
   // Note: a rejected sendMessage is NOT covered here. handleSend's onClick is fire-and-forget
