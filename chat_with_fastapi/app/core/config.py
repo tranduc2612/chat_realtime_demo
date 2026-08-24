@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
 
+
     # Database
     DATABASE_URL: str
     DATABASE_SYNC_URL: str

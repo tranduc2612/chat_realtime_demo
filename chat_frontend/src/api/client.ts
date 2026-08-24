@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+// Two backends, two ports: the HTTP API (chat_with_fastapi) and the WebSocket
+// service (chat_with_fastapi_ws) are separate deployments.
 export const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1';
-export const WS_BASE = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/api/v1';
+export const WS_BASE = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8001/api/v1';
 
 const client = axios.create({ baseURL: API_BASE });
 

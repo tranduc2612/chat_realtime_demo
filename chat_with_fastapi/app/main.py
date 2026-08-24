@@ -6,7 +6,7 @@ from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.presence import presence
-from app.core.websocket import manager
+from app.core.events import events
 
 # Gated on SENTRY_DSN being set (defaults to None/unset) — dev stays silent
 # unless you explicitly opt it in via .env; staging/prod turn this on via
@@ -23,9 +23,10 @@ if settings.SENTRY_DSN:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await manager.start()
+    # Nothing to start: sockets and the pub/sub listener live in the WebSocket
+    # service (chat_with_fastapi_ws). This side only publishes.
     yield
-    await manager.stop()
+    await events.close()
     await presence.close()
 
 

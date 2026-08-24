@@ -1,60 +1,26 @@
-"""Presence counting: online means "at least one live connection".
+"""Reading presence. Writing it lives in chat_with_fastapi_ws.
 
-The counting is what matters — a user with two tabs open must stay online when
-one closes, and connections left behind by a crashed replica must stop counting
-on their own.
+What matters here is the score cutoff: connections left behind by a ws replica
+that died without cleaning up must stop counting on their own.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.presence import CONNECTION_TTL_SECONDS, PresenceTracker
+from app.core.presence import CONNECTION_TTL_SECONDS, PresenceReader
 
 
 @pytest.fixture
 def tracker():
     with patch("app.core.presence.redis.from_url"):
-        return PresenceTracker()
+        return PresenceReader()
 
 
-def stub_pipeline(tracker: PresenceTracker, results: list) -> MagicMock:
+def stub_pipeline(tracker: PresenceReader, results: list) -> MagicMock:
     pipe = MagicMock()
     pipe.execute = AsyncMock(return_value=results)
     tracker._redis.pipeline = MagicMock(return_value=pipe)
     return pipe
-
-
-class TestConnected:
-    async def test_first_connection_reports_newly_online(self, tracker):
-        stub_pipeline(tracker, [0, 0, 1, True])  # zremrangebyscore, zcard=0, zadd, expire
-
-        assert await tracker.connected("user-a", "conn-1") is True
-
-    async def test_second_tab_does_not_report_newly_online(self, tracker):
-        stub_pipeline(tracker, [0, 1, 1, True])  # zcard=1: already had a connection
-
-        assert await tracker.connected("user-a", "conn-2") is False
-
-    async def test_redis_failure_does_not_raise(self, tracker):
-        import redis.asyncio as redis
-
-        pipe = MagicMock()
-        pipe.execute = AsyncMock(side_effect=redis.RedisError("down"))
-        tracker._redis.pipeline = MagicMock(return_value=pipe)
-
-        assert await tracker.connected("user-a", "conn-1") is False
-
-
-class TestDisconnected:
-    async def test_last_connection_reports_offline(self, tracker):
-        stub_pipeline(tracker, [1, 0, 0])  # zrem, zremrangebyscore, zcard=0
-
-        assert await tracker.disconnected("user-a", "conn-1") is True
-
-    async def test_closing_one_of_two_tabs_stays_online(self, tracker):
-        stub_pipeline(tracker, [1, 0, 1])  # zcard=1: another tab is still open
-
-        assert await tracker.disconnected("user-a", "conn-1") is False
 
 
 class TestOnlineAmong:

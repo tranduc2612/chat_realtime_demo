@@ -1,13 +1,13 @@
-# Chat Realtime — Backend (FastAPI)
+# Chat Realtime — HTTP API (FastAPI)
 
-Python backend for a realtime chat app: FastAPI + SQLAlchemy (async) + MySQL + Alembic + JWT auth + WebSocket messaging over Redis Pub/Sub.
+The REST half of the chat backend: FastAPI + SQLAlchemy (async) + MySQL + Alembic + JWT auth. Serves no WebSockets — those live in a separate, separately-deployed service, [`../chat_with_fastapi_ws`](../chat_with_fastapi_ws). This project owns the database schema and issues the tokens that one verifies.
 
 ## Stack
 
-- **FastAPI** — HTTP + WebSocket API
+- **FastAPI** — HTTP API only
 - **SQLAlchemy 2.0** (async, `aiomysql`) — ORM
 - **MySQL** — database
-- **Redis** — Pub/Sub backbone for WebSocket broadcast (`app/core/websocket.py`)
+- **Redis** — publishes realtime events for the WebSocket service to deliver (`app/core/events.py`)
 - **Alembic** — schema migrations
 - **python-jose** + **bcrypt** — JWT auth & password hashing
 
@@ -19,7 +19,7 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-You also need a **Redis server running locally** (required at app startup — the WebSocket connection manager publishes/subscribes through it):
+You also need a **Redis server running locally** — it is how realtime events reach the WebSocket service:
 
 ```bash
 brew install redis      # macOS
@@ -70,7 +70,7 @@ The API is served at `http://127.0.0.1:8000`, mounted under `/api/v1`.
 
 ## Running with Docker
 
-The repo root (`chat_realtime_demo/`) has three environments — dev, staging, production — each a full stack (MySQL, Redis, a one-shot `migrate` service, this backend as 3 replicas behind nginx, and the frontend), each on its own port range so all three can run at once:
+The repo root (`chat_realtime_demo/`) has three environments — dev, staging, production — each a full stack (MySQL, Redis, a one-shot `migrate` service, this API as 3 replicas behind nginx, the WebSocket service as its own deployment, and the frontend), each on its own port range so all three can run at once:
 
 ```bash
 cd ..              # repo root, alongside chat_frontend/
@@ -79,9 +79,9 @@ make staging       # :8080 backend / :5174 frontend — real build, needs .env.s
 make prod          # :9000 backend / :5175 frontend — real build, needs .env.prod first
 ```
 
-`make dev` is equivalent to (and interchangeable with) running `cd .. && docker compose up` directly — that's what `e2e/` uses. Staging/prod need a one-time setup step: `cp .env.staging.example .env.staging` (and the same for prod), then fill in real values — the placeholder `.example` values are not safe to run with as-is. `make {dev,staging,prod}-down` tears down the corresponding environment only.
+`make dev` starts this service only; the WebSocket service is a separate deployment with its own targets (`make ws`, `make ws-staging`, `make ws-prod`). `make up` runs both dev deployments, which is what `e2e/` uses. Staging/prod need a one-time setup step: `cp .env.staging.example .env.staging` (and the same for prod), then fill in real values — the placeholder `.example` values are not safe to run with as-is. `make {dev,staging,prod}-down` tears down the corresponding environment only.
 
-Only dev builds with source bind-mounted and `uvicorn --reload`; staging/prod run whatever's baked into the image at build time (closer to a real release artifact), and the frontend runs an actual `vite build && vite preview` there instead of the dev server. `nginx` is the only container publishing its environment's backend port to the host in every case — the three backend replicas are internal-only, reachable only through nginx's `upstream backend_pool` (`nginx/nginx.conf`, shared across all three environments, `least_conn` + passive health checks). Response header `X-Upstream-Addr` shows which replica handled a request. This is why the Redis Pub/Sub design in [Realtime architecture](#realtime-architecture-redis-pubsub) matters: two clients can land on two different replicas behind the load balancer and still see each other's messages live.
+Only dev builds with source bind-mounted and `uvicorn --reload`; staging/prod run whatever's baked into the image at build time (closer to a real release artifact), and the frontend runs an actual `vite build && vite preview` there instead of the dev server. `nginx` is the only container publishing its environment's backend port to the host in every case — the three API replicas are internal-only, reachable only through nginx's `upstream api_pool` (`nginx/nginx.conf`, shared across all three environments, round-robin + passive health checks). The WebSocket service has its own nginx and its own port (`nginx/nginx.ws.conf`, :8001/:8081/:9001), so either side can be restarted or fail without touching the other. Response header `X-Upstream-Addr` shows which replica handled a request. This is why the Redis Pub/Sub design in [Realtime architecture](#realtime-architecture-redis-pubsub) matters: the replica that handles a send is never the one holding the recipient's socket, and clients still see messages live.
 
 **Versioning:** the root `VERSION` file (e.g. `1.0.0`) is the single source of truth, injected as `APP_VERSION` by the root `Makefile`. It shows up live at `/api/v1/docs` (this file's `version=` in the Swagger UI) on whichever environment you hit, and each environment's image is tagged with it (`chat_realtime_demo-backend:1.0.0-dev` / `...-staging` / bare `...1.0.0` for prod — `docker images` shows all three). Bump `VERSION` and rerun `make <env>` to release a new version.
 
@@ -94,7 +94,7 @@ make test
 # equivalent to: pytest (runs with coverage — see pytest.ini)
 ```
 
-Unit tests for the service layer (`app/services/`) live in `tests/`, using mocked DB sessions (`unittest.mock.MagicMock(spec=AsyncSession)`) — no real database required.
+`tests/services/` covers the service layer with mocked DB sessions (`unittest.mock.MagicMock(spec=AsyncSession)`); `tests/core/` covers the Redis event envelope and the presence reader. No real database or Redis required.
 
 ## Migrations
 
@@ -117,7 +117,8 @@ app/
 │   ├── config.py        # env-based settings
 │   ├── database.py      # async engine/session factory
 │   ├── security.py      # JWT + password hashing
-│   └── websocket.py     # ConnectionManager (rooms + user channels, backed by Redis Pub/Sub)
+│   ├── events.py        # publishes realtime events for the WebSocket service
+│   └── presence.py      # reads who is online (the WebSocket service writes it)
 ├── models/              # SQLAlchemy ORM models (source of truth for schema)
 ├── schemas/             # Pydantic request/response models
 ├── services/            # business logic, instantiated per-request with a DB session
@@ -132,7 +133,7 @@ app/
 - **ConversationMember** — links users to conversations; `role`: `owner`/`admin`/`member`; `left_at` (soft-remove), `last_read_message_id` (read receipts)
 - **Message** — UUID PK; `type`: `text`/`image`/`video`/`file`/`mixed`/`system`; self-referential `reply_to_message_id`
 - **MessageAttachment** — files attached to a message
-- **MessageRead** — fine-grained per-user read log
+- **MessageRead** — a per-message read log, currently unused: read receipts use `ConversationMember.last_read_message_id` as a per-member watermark instead, which answers both "did they see it?" and "who saw it?" without growing with the message count
 
 ## API overview
 
@@ -147,17 +148,27 @@ app/
 | `POST /conversations` | Create a group, or reuse an existing direct conversation |
 | `POST /conversations/{id}/members` | Add members to a conversation |
 | `GET /messages/{conversation_id}` | Paginated message history (`before_id`) |
-| `POST /messages/send` | Send a message (broadcasts over WebSocket) |
-| `WS /messages/ws/{conversation_id}?token=<jwt>` | Join a conversation room |
-| `WS /messages/ws/user/me?token=<jwt>` | User-level channel for cross-conversation notifications |
+| `POST /messages/send` | Send a message (publishes it for the WebSocket service to deliver) |
+| `GET /messages/{conversation_id}/reads` | Every member's read watermark |
+| `POST /messages/{conversation_id}/read` | Advance your own read watermark |
+
+The two `WS /messages/ws/...` endpoints are served by [`../chat_with_fastapi_ws`](../chat_with_fastapi_ws) on port 8001, under the same URL prefix.
 
 Sending a message broadcasts `{"event": "new_message", "data": {...}}` to the conversation room and to each member's user-level channel, so the sidebar/unread state updates even outside the open conversation.
 
 ## Realtime architecture (Redis Pub/Sub)
 
-`ConnectionManager` (`app/core/websocket.py`) keeps locally-connected sockets in per-process dicts (`_rooms`, `_users`), but `broadcast()`/`notify_user()` never write to those sockets directly — they `PUBLISH` a small JSON envelope (`{"scope": "room"|"user", "target": ..., "payload": ...}`) to a single Redis channel (`ws:events`). A background task started in `app/main.py`'s `lifespan` hook subscribes to that channel and delivers to whichever local sockets match, in every running process.
+This project holds no sockets. `EventPublisher` (`app/core/events.py`) `PUBLISH`es a JSON envelope to a single Redis channel (`ws:events`):
 
-This means a message sent to any uvicorn worker/replica reaches sockets connected to any other worker/replica — the previous in-memory-only implementation only worked with a single process. Redis must be reachable for the app to start.
+```json
+{"scope": "room", "target": "<conversation_id>", "payload": {...}, "exclude": "<user_id>|null"}
+```
+
+The WebSocket service subscribes to that channel and delivers to whichever of its sockets match, in every one of its replicas. So the replica that handled the request need not be — and now never is — the one holding the recipient's socket, and no session affinity is needed anywhere.
+
+Publishing needs no subscription, so nothing here starts a listener. Delivery is best-effort: the message is already committed when the publish happens, so a Redis blip logs a warning rather than failing the request.
+
+**Shared with the WebSocket service, and easy to break:** the envelope shape above (pinned by `tests/core/test_events.py`), `SECRET_KEY`/`ALGORITHM` (a mismatch rejects every socket with close code 4001), and the presence key layout in `app/core/presence.py` — which this project only reads; the WebSocket service writes it.
 
 ## Notes
 

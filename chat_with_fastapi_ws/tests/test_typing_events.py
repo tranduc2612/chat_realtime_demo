@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.api.routes.message import _handle_client_frame
+from app.api.routes.ws import _handle_client_frame
 from app.core.websocket import ConnectionManager
 
 
@@ -22,7 +22,7 @@ def user() -> MagicMock:
 
 
 async def handle(raw: str, user: MagicMock) -> MagicMock:
-    with patch("app.api.routes.message.manager.broadcast", new_callable=AsyncMock) as broadcast:
+    with patch("app.api.routes.ws.manager.broadcast", new_callable=AsyncMock) as broadcast:
         await _handle_client_frame(raw, "conv-1", user)
     return broadcast
 

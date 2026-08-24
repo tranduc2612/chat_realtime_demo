@@ -1,0 +1,33 @@
+# Versions pinned to match chat_with_fastapi/requirements.txt exactly. The two
+# services share a Redis event format, a JWT contract and a database schema, so
+# they must not drift on the libraries that implement those.
+#
+# Deliberately smaller than the API's: no Alembic (schema belongs to that
+# project), no bcrypt/passlib (this service verifies tokens, never passwords),
+# no email-validator, no request/response schemas.
+fastapi==0.136.3
+starlette==1.2.1
+uvicorn==0.49.0
+watchfiles==1.2.0
+httptools==0.8.0
+websockets==16.0
+
+SQLAlchemy==2.0.50
+aiomysql==0.3.2
+greenlet==3.5.1
+
+redis==8.0.1
+
+python-jose==3.5.0
+cryptography==48.0.0
+
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-dotenv==1.2.2
+
+sentry-sdk==2.61.1
+
+# Tests
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0

@@ -6,44 +6,75 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 chat_realtime_demo/
-├── chat_with_fastapi/         # Python backend (FastAPI)
+├── chat_with_fastapi/         # HTTP API service (FastAPI) — REST only, no sockets
+├── chat_with_fastapi_ws/      # WebSocket service (FastAPI) — sockets only, no REST
 ├── chat_frontend/             # React frontend (Vite + TypeScript)
 ├── e2e/                       # Playwright end-to-end tests (drives the two above)
-├── nginx/nginx.conf           # Load balancer config, shared by all three environments below
+├── nginx/nginx.conf           # HTTP API load balancer (all three environments)
+├── nginx/nginx.ws.conf        # WebSocket load balancer — separate deployment, separate port
 ├── VERSION                    # single source of truth for the app version — see Environments
 ├── Makefile                   # root-level: `make dev`/`staging`/`prod` — do not confuse with
 │                               # chat_with_fastapi/Makefile's `make dev` (that one is backend-local,
 │                               # non-Docker `uvicorn --reload`; this one is the whole Docker stack)
-├── docker-compose.yml         # dev environment
-├── docker-compose.staging.yml # staging environment
-├── docker-compose.prod.yml    # production environment
+├── docker-compose.yml         # dev: HTTP API + infra (MySQL/Redis/migrate) + frontend
+├── docker-compose.ws.yml      # dev: WebSocket service — deployed separately, port 8001
+├── docker-compose.staging.yml / docker-compose.ws.staging.yml  # same pair, staging
+├── docker-compose.prod.yml    / docker-compose.ws.prod.yml     # same pair, production
 ├── .env                       # dev secrets (committed — placeholder values only)
 └── .env.staging / .env.prod   # staging/prod secrets (gitignored — copy from the .example files)
 ```
 
 ### Environments (dev / staging / production)
 
-Three independent, identically-shaped stacks (MySQL, Redis, a one-shot `migrate` service, 3 backend replicas behind nginx, frontend), each runnable with a single `make` target and each on its own port range so **all three can run at once on one machine**:
+Three independent, identically-shaped environments (MySQL, Redis, a one-shot `migrate` service, 3 HTTP API replicas behind nginx, 2 WebSocket replicas behind their own nginx, frontend), each on its own port range so **all three can run at once on one machine**.
 
-| Env | Command | Backend (via nginx) | Frontend | MySQL/Redis published? |
+Each environment ships as **two deployments** — the HTTP API and the WebSocket service, on separate ports (see the next section for why):
+
+| Env | HTTP API | WebSockets | Frontend | MySQL/Redis published? |
 |---|---|---|---|---|
-| dev | `make dev` (or bare `docker compose up`, e.g. from `e2e/`) | `:8000` | `:5173`, `vite dev` hot reload | yes (`:3306`/`:6379`) |
-| staging | `make staging` | `:8080` | `:5174`, real `vite build`+`preview` | no, internal only |
-| prod | `make prod` | `:9000` | `:5175`, real `vite build`+`preview` | no, internal only |
+| dev | `make dev` → `:8000` | `make ws` → `:8001` | `:5173`, `vite dev` hot reload | yes (`:3306`/`:6379`) |
+| staging | `make staging` → `:8080` | `make ws-staging` → `:8081` | `:5174`, real `vite build`+`preview` | no, internal only |
+| prod | `make prod` → `:9000` | `make ws-prod` → `:9001` | `:5175`, real `vite build`+`preview` | no, internal only |
 
-`docker-compose.yml` **is** the dev environment — bind-mounted source, `--reload`, hardcoded dev placeholder secrets, unchanged from before. `docker-compose.staging.yml`/`docker-compose.prod.yml` are separate, self-contained compose files (same shape, no bind mounts — they run whatever's baked into the image, closer to a real release build) driven by `.env.staging`/`.env.prod`. First-time setup for either: `cp .env.staging.example .env.staging` (and same for prod), fill in real values — the committed dev `.env` is fine as-is (its secrets are already public in `docker-compose.yml`'s history), but the `.example` placeholders for staging/prod are **not** safe to run with as-is. `make {staging,prod}-down` tears each down without touching the others (`-p chat_realtime_demo_{staging,prod}` gives each its own container/network namespace, which is also what lets all three coexist).
+`make up` / `make down` bring up or tear down both dev deployments at once — convenience for local work only; real deploys go one side at a time. `e2e/playwright.config.ts` uses `make up` for the same reason.
+
+`docker-compose.yml` **is** the dev environment — bind-mounted source, `--reload`, hardcoded dev placeholder secrets, unchanged from before. `docker-compose.staging.yml`/`docker-compose.prod.yml` are separate, self-contained compose files (same shape, no bind mounts — they run whatever's baked into the image, closer to a real release build) driven by `.env.staging`/`.env.prod`. First-time setup for either: `cp .env.staging.example .env.staging` (and same for prod), fill in real values — the committed dev `.env` is fine as-is (its secrets are already public in `docker-compose.yml`'s history), but the `.example` placeholders for staging/prod are **not** safe to run with as-is. `make {staging,prod}-down` (and `make ws-{staging,prod}-down`) tear each down without touching the others (`-p chat_realtime_demo_{staging,prod}` gives each its own container/network namespace, which is also what lets all three coexist).
 
 **Versioning:** `VERSION` at the repo root (e.g. `1.0.0`) is the single source of truth. The root `Makefile` reads it and exports it as `APP_VERSION` before invoking `docker compose`, which flows into two places per environment: the backend's `APP_VERSION` setting (visible live at `/api/v1/docs` on any environment — FastAPI's `version=` field) and each image's tag (`chat_realtime_demo-backend:1.0.0-dev`, `...-staging`, or bare `...1.0.0` for prod — `docker images` shows all three side by side). To release a new version: bump `VERSION`, rerun `make <env>` — nothing else to touch.
 
+#### Two services: HTTP API and WebSockets
+
+The backend is **two separate FastAPI projects**, deployed independently:
+
+| | `chat_with_fastapi/` | `chat_with_fastapi_ws/` |
+|---|---|---|
+| Serves | REST only — no `WebSocket` import anywhere | The two socket endpoints only — no REST routes |
+| Redis | publishes (`app/core/events.py`) | publishes *and* subscribes (`app/core/websocket.py`) |
+| Database | full ORM + Alembic, owns the schema | four explicit SQL statements (`app/db/queries.py`), read-mostly |
+| Dev port | `:8000` | `:8001` |
+| Compose | `docker-compose.yml` (`make dev`) | `docker-compose.ws.yml` (`make ws`) |
+| nginx | `nginx/nginx.conf` | `nginx/nginx.ws.conf` |
+
+Why split at all: the two kinds of traffic scale on different limits — HTTP requests are short and CPU/DB-bound, sockets are long-lived and memory/file-descriptor-bound — and a problem in one should not take the other down. Verified by stopping each side in turn: with the API down, open sockets stay open, new ones are still accepted and typing still flows; with the WS service down, `POST /messages/send` still returns 201 and persists.
+
+**The four things the two must agree on.** They never call each other, so these are the entire contract, and getting one wrong fails at runtime rather than at build time:
+
+1. **The Redis envelope** — `{"scope": "room"|"user", "target": ..., "payload": ..., "exclude": ...}` on channel `ws:events`. Written by `events.py` here, read by `websocket.py` there. `tests/core/test_events.py` pins the wire format.
+2. **`SECRET_KEY` and `ALGORITHM`** — the WS service only *verifies* tokens the API issues. A mismatch rejects every socket with close code 4001, which surfaces to the browser as a bare handshake failure, so check this first when sockets 403 and nothing else looks wrong.
+3. **The presence layout** — one Redis sorted set per user, `presence:{user_id}`, plus a matching `CONNECTION_TTL_SECONDS` on both sides. The WS service writes and refreshes; the API only reads (`PresenceReader.online_among`).
+4. **The database schema** — the WS service reads `users` and `conversation_members` and writes `users.is_online` / `users.last_seen_at`. It deliberately uses explicit SQL instead of copying six ORM model files, so the coupling is four statements in one file rather than a second copy of the models drifting quietly. Migrations belong to the API project alone; there is no second Alembic to race.
+
+They also share MySQL and Redis themselves, unavoidably — Redis going down stops realtime no matter how the code is split.
+
 #### Load balancing (`nginx/nginx.conf`)
 
-Same config file, bind-mounted read-only into all three environments' `nginx` service. `nginx` is the only container publishing its environment's backend port to the host; `backend-a/b/c` are internal-only and only reachable through it. `nginx`'s `upstream backend_pool` lists all three by their fixed compose service names (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin) and balances with `least_conn` plus passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`, or `:8080`/`:9000` for staging/prod).
+`nginx.conf` (API) and `nginx.ws.conf` (WebSockets) are bind-mounted read-only into their respective deployments across all three environments. `nginx` is the only container publishing its environment's backend port to the host; `backend-a/b/c` and `ws-a/b` are internal-only and only reachable through it. Each config has one upstream (`api_pool` in one, `ws_pool` in the other — see the split above) listing its replicas by fixed compose service name (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin), with passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`, or `:8080`/`:9000` for staging/prod).
 
-This is where the Redis Pub/Sub design described below pays off: a `POST /messages/send` handled by `backend-b` publishes to Redis, and `backend-a`/`backend-c` each have their own listener task that delivers to *their* locally-connected sockets — so two users whose WebSocket connections land on different replicas (nginx doesn't guarantee session affinity, and none is needed) still see messages in real time. Migrations run once via the separate `migrate` service specifically to avoid 3 replicas racing to apply `alembic upgrade head` concurrently on startup.
+This is where the Redis Pub/Sub design described below pays off, and it's what makes the api/ws split possible at all: a `POST /messages/send` handled by `backend-b` in the API service publishes to Redis, and `ws-a`/`ws-b` in the WebSocket service each have their own listener task that delivers to *their* locally-connected sockets. So the replica that handled the request need not be — and now never is — the one holding the recipient's socket, and two users whose sockets land on different ws replicas (nginx guarantees no session affinity, and none is needed) still see messages in real time. Migrations run once via the separate `migrate` service specifically to avoid every replica racing to apply `alembic upgrade head` concurrently on startup.
 
 ---
 
-## Backend (`chat_with_fastapi/`)
+## HTTP API service (`chat_with_fastapi/`)
 
 All commands run from inside `chat_with_fastapi/`.
 
@@ -93,7 +124,7 @@ SECRET_KEY=your-secret-key
 - `app/schemas/` — Pydantic request/response models
 - `app/services/` — business logic instantiated per-request with a DB session
 - `app/api/routes/` — thin routers that wire HTTP → services
-- `app/core/` — config, DB session factory, JWT security, WebSocket manager and presence tracker (both Redis-backed)
+- `app/core/` — config, DB session factory, JWT security, `events.py` (publishes to the WebSocket service) and `presence.py` (reads who is online); both Redis-backed
 - `app/utils/translator.py` — i18n via `app/locales/{en,vi}.json`
 
 **Data model summary:**
@@ -108,7 +139,7 @@ SECRET_KEY=your-secret-key
 - `auth.py` — `POST /auth/login` (OAuth2 password form → JWT)
 - `user.py` — `POST /users/` (public registration), `GET /users/search?q=`, `GET|PUT /users/me`, `DELETE /users/disable/{id}`
 - `conversation.py` — `GET /conversations`, `POST /conversations` (creates group, or reuses an existing direct conversation between the two users), `POST /conversations/{id}/members`
-- `message.py` — `GET /messages/{conversation_id}` (paginated history via `before_id`), `POST /messages/send`, `GET /messages/{conversation_id}/reads` + `POST /messages/{conversation_id}/read` (read receipts, below), plus the two WebSocket endpoints below
+- `message.py` — `GET /messages/{conversation_id}` (paginated history via `before_id`), `POST /messages/send`, `GET /messages/{conversation_id}/reads` + `POST /messages/{conversation_id}/read` (read receipts, below). The WebSocket endpoints referenced below are served by the *other* project, on port 8001, under the same `/messages` URL prefix
 
 **Messaging & WebSocket flow:**
 - `POST /api/v1/messages/send` — saves `Message` + attachments, bumps `Conversation.updated_at`, then broadcasts `{"event": "new_message", "data": {...}}` twice: to conversation-room sockets via `manager.broadcast()` and to every member's user-level channel via `manager.notify_users()` (so members not currently viewing that conversation still get notified)
@@ -121,7 +152,7 @@ SECRET_KEY=your-secret-key
 
 Redis is the **live truth**; `User.is_online` is only the last known value (written on transitions alongside `last_seen_at`), so `GET /conversations` and `GET /users/search` overlay `presence.online_among(...)` onto their responses instead of trusting the column. A transition notifies only `ConversationService.get_contact_ids()` — people who share a conversation with you — since broadcasting to every account would both leak who is online to strangers and cost a publish per user on the instance. Event shape: `{"event": "presence", "data": {user_id, is_online, last_seen_at}}` on the user channel; the frontend's `receivePresence` patches `is_online` on the member profiles inside each conversation, which is where the sidebar and chat header already read it from.
 
-**Realtime architecture (Redis Pub/Sub):** `app/core/websocket.py`'s singleton `ConnectionManager` keeps locally-connected sockets in per-process dicts (`_rooms`: `conversation_id → [(user_id, WebSocket)]`, `_users`: `user_id → [WebSocket]`), but `broadcast()`/`notify_user()` never write to those sockets directly — they `PUBLISH` a JSON envelope (`{"scope": "room"|"user", "target": ..., "payload": ...}`) to a single Redis channel (`ws:events`). A background task (started in `main.py`'s `lifespan`) subscribes to that channel and delivers to whichever local sockets match, in *every* running process. That listener is the *only* thing delivering realtime events in its process and nothing restarts it, so its loop deliberately swallows and logs per-event exceptions — an escaping error would silently kill every WebSocket update until the process restarts. Relatedly, the delivery helpers prune dead sockets by rebuilding the list rather than `list.remove()`: a socket's own `disconnect()` can prune it first while a send is awaiting, and `remove()` would then raise on the missing entry. This is what lets a message sent to any uvicorn worker/replica reach sockets connected to any other worker/replica — the connection manager is no longer single-process-only, which is what makes horizontally scaling the backend behind a load balancer possible.
+**Realtime architecture (Redis Pub/Sub):** in `chat_with_fastapi_ws`, `app/core/websocket.py`'s singleton `ConnectionManager` keeps locally-connected sockets in per-process dicts (`_rooms`: `conversation_id → [(user_id, WebSocket)]`, `_users`: `user_id → [WebSocket]`), but `broadcast()`/`notify_user()` never write to those sockets directly — they `PUBLISH` a JSON envelope (`{"scope": "room"|"user", "target": ..., "payload": ...}`) to a single Redis channel (`ws:events`). A background task (started in `main.py`'s `lifespan`) subscribes to that channel and delivers to whichever local sockets match, in *every* running process. That listener is the *only* thing delivering realtime events in its process and nothing restarts it, so its loop deliberately swallows and logs per-event exceptions — an escaping error would silently kill every WebSocket update until the process restarts. Relatedly, the delivery helpers prune dead sockets by rebuilding the list rather than `list.remove()`: a socket's own `disconnect()` can prune it first while a send is awaiting, and `remove()` would then raise on the missing entry. This is what lets a message sent to any uvicorn worker/replica reach sockets connected to any other worker/replica — the connection manager is no longer single-process-only, which is what makes horizontally scaling the backend behind a load balancer possible.
 
 **Auth:** `POST /api/v1/auth/login` accepts `OAuth2PasswordRequestForm`, returns JWT. `get_current_user` dep decodes token and loads `User` each request.
 
@@ -132,6 +163,30 @@ Redis is the **live truth**; `User.is_online` is only the last known value (writ
 **Error tracking (Sentry):** gated entirely on `SENTRY_DSN` (`app/core/config.py`) being set — unset (the default) means `sentry_sdk.init()` in `main.py` never runs, so dev stays silent unless you opt in. `release` is set to `settings.APP_VERSION` (the same VERSION-file-driven value used everywhere else), `environment` to `SENTRY_ENVIRONMENT` (`development`/`staging`/`production`, defaulted per compose file). FastAPI/Starlette/SQLAlchemy/Redis integrations are auto-detected — no explicit `integrations=[...]` list needed. Frontend mirrors this: `VITE_SENTRY_DSN` gates `Sentry.init()` in `main.tsx`, same `release`/`environment` convention, plus a `Sentry.ErrorBoundary` wrapping `<App />` for uncaught render errors.
 
 **Tests:** `chat_with_fastapi/tests/services/` — unit tests for the service layer, using `unittest.mock.MagicMock(spec=AsyncSession)` (see `tests/conftest.py`'s `mock_db`/`make_result` fixtures). `chat_with_fastapi/tests/api/test_typing_events.py` covers what sits outside that layer: the WebSocket frame parser and the connection manager's room delivery (sender exclusion, dead-socket pruning). No real database required; run via `make test` / `pytest` (coverage configured in `pytest.ini`).
+
+---
+
+## WebSocket service (`chat_with_fastapi_ws/`)
+
+All commands run from inside `chat_with_fastapi_ws/`.
+
+```bash
+make dev     # uvicorn app.main:app --reload --port 8001
+make test    # pytest (mocked Redis and DB session — no infrastructure needed)
+```
+
+`cp .env.example .env` first. Only `DATABASE_URL`, `REDIS_URL` and `SECRET_KEY` matter, and the last two **must match the HTTP API's** — see the contract in Environments above.
+
+**Stack:** FastAPI + SQLAlchemy (async, `aiomysql`, no ORM models) + Redis (Pub/Sub) + JWT verification (python-jose). No Alembic, no bcrypt/passlib, no Pydantic request schemas — it issues no tokens, hashes no passwords and owns no schema.
+
+**Layout:**
+- `app/main.py` — app + `lifespan` that starts the pub/sub listener; `GET /health` is liveness-only and deliberately does not touch MySQL or Redis, since sockets survive a database blip and failing the check would make an orchestrator restart the process and drop every connection
+- `app/api/routes/ws.py` — the two endpoints, plus typing broadcast and presence publishing
+- `app/core/websocket.py` — `ConnectionManager`: local socket registries + Redis pub/sub listener
+- `app/core/presence.py` — `PresenceTracker`: connection counting, heartbeats, transitions
+- `app/db/queries.py` — every SQL statement this service issues, four of them
+
+**Tests:** `tests/` — the client-frame parser, room delivery and dead-socket pruning, presence counting, and the query mapping. Mocked throughout; the live-schema proof is `e2e/tests/{typing,presence,realtime}.spec.ts`.
 
 ---
 
@@ -151,10 +206,10 @@ npm run test:watch    # vitest, watch mode
 
 ### Frontend environment
 
-`.env` (already provided):
+Two backends, two ports (`src/api/client.ts` falls back to these when unset):
 ```
-VITE_API_URL=http://localhost:8000/api/v1
-VITE_WS_URL=ws://localhost:8000/api/v1
+VITE_API_URL=http://localhost:8000/api/v1   # chat_with_fastapi
+VITE_WS_URL=ws://localhost:8001/api/v1     # chat_with_fastapi_ws
 ```
 
 ### Frontend architecture
@@ -197,7 +252,7 @@ npm run test        # playwright test
 npm run test:ui     # playwright test --ui
 ```
 
-`playwright.config.ts` starts the stack itself via `webServer: { command: 'docker compose up -d', cwd: '..' }` and waits on `http://localhost:5173`. **`workers: 1`** is intentional — the target is a single dev-mode `uvicorn --reload` process, not a scaled multi-worker backend, and running specs concurrently was flaking it under load.
+`playwright.config.ts` starts the stack itself via two `webServer` entries — `make up` waiting on `http://localhost:5173`, and `make ws` waiting on `http://localhost:8001/health`. The second one matters: `reuseExistingServer` only checks its own URL, so without it a locally running vite would satisfy the config while nothing served sockets, and every realtime spec would fail on a connection error instead of saying what was missing. **`workers: 1`** is intentional — the target is a single dev-mode `uvicorn --reload` process, not a scaled multi-worker backend, and running specs concurrently was flaking it under load.
 
 - `helpers/users.ts` — API-level fixtures (`registerUser`, `loginUser`, `createDirectConversation`) that set up test data directly via the backend REST API, skipping the UI where it isn't the thing under test
 - `helpers/ui.ts` — UI-driven helpers (`loginViaUI`)

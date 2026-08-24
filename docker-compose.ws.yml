@@ -1,0 +1,69 @@
+# WebSocket deployment — dev. Same repo and same image as the HTTP API, but a
+# separate deployment: its own compose project, its own nginx, its own port
+# (8001), its own release and restart cycle. Run with `make ws`.
+#
+# Independence, and its limits:
+#   - Restarting, rebuilding or losing the HTTP stack does not touch open
+#     sockets here, and vice versa — different containers, different nginx.
+#   - The two still share MySQL and Redis, unavoidably: this side verifies JWTs
+#     and conversation membership against the database, and receives messages
+#     published by the API side through Redis. Redis going down stops realtime
+#     no matter how the apps are split.
+#   - Migrations belong to the HTTP stack (its one-shot `migrate` service).
+#     Nothing here writes schema, so there is no second migration runner to
+#     race with the first.
+
+x-ws-env: &ws-env
+  APP_NAME: CHAT_REALTIME_WS
+  APP_VERSION: ${APP_VERSION:-1.0.0}
+  API_PREFIX: /api/v1
+  # Reached over the shared network below, by compose service name
+  DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
+  REDIS_URL: redis://redis:6379/0
+  # Must match the HTTP stack's key: this side only *verifies* tokens the API
+  # side issued, so a mismatch rejects every socket with 4001.
+  SECRET_KEY: dev-secret-key-change-in-production
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+
+x-ws-base: &ws-base
+  build: ./chat_with_fastapi_ws
+  image: chat_realtime_demo-ws:${APP_VERSION:-1.0.0}-dev
+  restart: unless-stopped
+  command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+  volumes:
+    - ./chat_with_fastapi_ws:/app
+  environment:
+    <<: *ws-env
+  # No depends_on into the other stack: that is the point. These start whether
+  # or not the API side is up, and sockets survive it going away.
+
+services:
+  # Scale this pool on its own — sockets are long-lived and bound by memory and
+  # file descriptors, where API replicas are bound by CPU and the database.
+  # Adding a replica means a service here plus a `server` line in
+  # nginx/nginx.ws.conf's ws_pool.
+  ws-a:
+    <<: *ws-base
+
+  ws-b:
+    <<: *ws-base
+
+  nginx-ws:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.ws.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8001:8001"
+    depends_on:
+      - ws-a
+      - ws-b
+
+# Same network as docker-compose.yml. Declared in both rather than `external`,
+# so neither stack has to be started first and `docker compose down` on one
+# leaves the network alone while the other is still attached to it.
+networks:
+  default:
+    name: chat_realtime_demo_shared

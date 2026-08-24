@@ -13,11 +13,26 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
-    command: 'docker compose up -d',
-    url: 'http://localhost:5173',
-    reuseExistingServer: true,
-    cwd: '..',
-    timeout: 120_000,
-  },
+  // Two deployments to wait for, checked independently: the frontend (which
+  // `make up` brings up along with the HTTP API) and the WebSocket service on
+  // its own port. Checking :8001 separately matters because reuseExistingServer
+  // only looks at the URL — with a single frontend check, a locally running
+  // vite would satisfy it while nothing served sockets, and every realtime spec
+  // would fail on a connection error instead of saying what was missing.
+  webServer: [
+    {
+      command: 'make up',
+      url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      cwd: '..',
+      timeout: 120_000,
+    },
+    {
+      command: 'make ws',
+      url: 'http://localhost:8001/health',
+      reuseExistingServer: true,
+      cwd: '..',
+      timeout: 120_000,
+    },
+  ],
 });

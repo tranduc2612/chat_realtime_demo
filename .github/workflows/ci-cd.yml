@@ -48,6 +48,31 @@ jobs:
           SECRET_KEY: ci-test-secret-key
         run: pytest
 
+  ws-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chat_with_fastapi_ws
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: chat_with_fastapi_ws/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Same deal as backend-test: Redis and the DB session are mocked, these
+      # just need to be present for app.core.config/app.core.database to import.
+      - name: Run tests
+        env:
+          DATABASE_URL: mysql+aiomysql://root:test@localhost:3306/test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-test-secret-key
+        run: pytest
+
   frontend-test:
     runs-on: ubuntu-latest
     defaults:
@@ -79,7 +104,7 @@ jobs:
 
   e2e-test:
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test]
+    needs: [backend-test, ws-test, frontend-test]
     steps:
       - uses: actions/checkout@v4
 
@@ -88,8 +113,10 @@ jobs:
       # timeout — once this step finishes, `docker compose up -d` in the
       # webServer command just finds everything already built and running
       # (reuseExistingServer: true) and returns near-instantly.
-      - name: Build and start the stack (docker-compose.yml == dev environment)
-        run: docker compose up -d --build
+      # Two deployments now: the HTTP API (:8000) and the WebSocket service
+      # (:8001) ship separately, so CI has to start both to exercise realtime.
+      - name: Build and start both stacks (dev environment)
+        run: make up
 
       # `up -d` is detached — it never streams a failing container's own
       # stdout/stderr (e.g. the actual Alembic traceback if `migrate` exits
@@ -97,7 +124,9 @@ jobs:
       # undiagnosable from the job log alone.
       - name: Show container logs if the stack failed to start
         if: failure()
-        run: docker compose logs --no-color
+        run: |
+          docker compose logs --no-color
+          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml logs --no-color
 
       - name: Wait for the frontend to be reachable
         run: |
@@ -107,6 +136,18 @@ jobs:
           done
           echo "Frontend never became reachable" >&2
           docker compose logs
+          exit 1
+
+      - name: Wait for the WebSocket service to be reachable
+        run: |
+          for i in $(seq 1 30); do
+            # 404 is the expected answer here: the ws deployment mounts no HTTP
+            # routes, so a reply at all means nginx-ws and a ws replica are up
+            curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/ | grep -q '404\|200' && exit 0
+            sleep 2
+          done
+          echo "WebSocket service never became reachable" >&2
+          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml logs
           exit 1
 
       - uses: actions/setup-node@v4
@@ -132,13 +173,15 @@ jobs:
           path: e2e/test-results
           retention-days: 7
 
-      - name: Tear down the stack
+      - name: Tear down both stacks
         if: always()
-        run: docker compose down -v
+        run: |
+          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml down
+          docker compose down -v
 
   build-and-push:
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test, e2e-test]
+    needs: [backend-test, ws-test, frontend-test, e2e-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
@@ -168,6 +211,19 @@ jobs:
             ghcr.io/${{ github.repository }}-backend:latest
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+
+      # Its own image, deployed on its own cadence — that separation is the
+      # point of splitting the service out (see CLAUDE.md).
+      - name: Build and push websocket image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./chat_with_fastapi_ws
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-ws:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository }}-ws:latest
+          cache-from: type=gha,scope=ws
+          cache-to: type=gha,mode=max,scope=ws
 
       # Same image docker-compose.staging.yml/.prod.yml already build. It's
       # dev-shaped at the Dockerfile level (CMD npm run dev) and only becomes
