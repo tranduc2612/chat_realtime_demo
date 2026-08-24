@@ -165,6 +165,8 @@ Sending a message broadcasts `{"event": "new_message", "data": {...}}` to the co
 
 This project holds no sockets. `EventPublisher` (`app/core/events.py`) `PUBLISH`es a JSON envelope to a single Redis channel (`ws:events`):
 
+> For the end-to-end picture — how a send reaches a socket on another replica, how the read watermark propagates, how presence is counted across tabs — see [**Realtime flows**](../README.md#realtime-flows) in the root README, with sequence diagrams covering both services.
+
 ```json
 {"scope": "room", "target": "<conversation_id>", "payload": {...}, "exclude": "<user_id>|null"}
 ```

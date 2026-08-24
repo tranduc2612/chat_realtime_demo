@@ -48,6 +48,8 @@ Paths match what the HTTP API used to serve, so clients change host and port onl
 
 ## What it does
 
+> This section covers what *this service* does. For the flows end to end — a message travelling from an HTTP POST on one replica to a socket on another, read receipts, presence across tabs — see [**Realtime flows**](../README.md#realtime-flows) in the root README.
+
 **Delivers events published by the API.** `ConnectionManager` (`app/core/websocket.py`) keeps locally-connected sockets in per-process dicts (`_rooms`, `_users`) and subscribes to the Redis channel `ws:events`. Envelopes look like:
 
 ```json

@@ -44,6 +44,123 @@ Two backend services, deployed separately, meeting only at Redis and MySQL:
 
 The two services never call each other. They agree on four things only — the Redis envelope format, `SECRET_KEY`/`ALGORITHM` for JWT verification, the Redis presence key layout, and the database schema. [`CLAUDE.md`](CLAUDE.md) documents that contract; it is the first place to look when sockets fail while everything else works.
 
+## Realtime flows
+
+The three realtime features all ride the same Redis channel, but each answers a different question. Sequence diagrams below; the contract they share is in [`CLAUDE.md`](CLAUDE.md).
+
+### Sending a message
+
+The point of the split: the replica that *handles* the send is almost never the one *holding* the recipient's socket. Nothing is written to an in-process registry — the API publishes, and every WebSocket replica delivers to whatever sockets it happens to own.
+
+```mermaid
+sequenceDiagram
+    participant A as Browser A (sender)
+    participant NX as nginx :8000
+    participant API as backend-b
+    participant R as Redis<br/>ws:events
+    participant WS as ws-a / ws-b
+    participant B as Browser B
+
+    A->>NX: POST /messages/send
+    NX->>API: round-robin (any replica)
+    API->>API: INSERT message + attachments
+    API->>API: advance sender's own watermark<br/>bump conversation.updated_at
+    API->>API: COMMIT
+    API->>R: PUBLISH scope:"room", target:conversation_id
+    API->>R: PUBLISH scope:"user", target:member_id (× every member)
+    R-->>WS: every replica's listener receives both
+    WS->>B: new_message — room socket, if B has the conversation open
+    WS->>B: new_message — session socket, updates sidebar + unread
+    API-->>A: 201 with the persisted message
+```
+
+**Why publish twice.** The room broadcast reaches people looking at that conversation right now. The per-member publish reaches everyone else — someone reading a different chat still needs their sidebar and unread badge to move. A client with both sockets open receives both copies and deduplicates by message id.
+
+**Delivery is best-effort by design.** The publish happens *after* `COMMIT`, so a Redis outage logs a warning and the request still returns 201. The message is in MySQL; the recipient sees it on their next fetch instead of instantly. The reverse order — publish, then commit — could announce a message that never persisted.
+
+### Read receipts ("seen")
+
+Stored as a **watermark per member**, not a row per (message, reader): `conversation_members.last_read_message_id` means "read up to here". That answers both *did they see it?* and, in a group, *who saw it?* in one row per member, instead of a table that grows with the message count. (This is why the `message_reads` table exists but stays unused.)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser B (reader)
+    participant API as backend-*
+    participant R as Redis<br/>ws:events
+    participant WS as ws-*
+    participant A as Browser A (sender)
+
+    B->>API: POST /messages/{conversation_id}/read {message_id}
+    API->>API: look up created_at of target vs current watermark
+
+    alt watermark moves forward
+        API->>API: UPDATE last_read_message_id, COMMIT
+        API->>R: PUBLISH scope:"room", target:conversation_id
+        R-->>WS: listener
+        WS->>A: message_read {user_id, username, avatar_url,<br/>last_read_message_id}
+        API-->>B: 200
+    else same or older message
+        API-->>B: 200 — nothing broadcast
+    end
+```
+
+**The watermark never walks backwards.** A client scrolling up through history would otherwise "un-read" messages it had already seen, so the target's `created_at` is compared against the current one and an older id is ignored. Sending also counts as reading — `MessageService.send()` advances the sender's own watermark in the same transaction, so it never lags behind their own messages.
+
+**Room-only, no per-member fan-out** — unlike `new_message`. A receipt only matters to someone currently looking at that conversation; anyone who opens it later refetches `GET /messages/{id}/reads` and gets the same answer. Fanning out would cost one publish per member for something nobody would see. The frontend then groups receipts by `last_read_message_id`, which is what renders each reader's avatar under the last message they read.
+
+### Online presence and last seen
+
+The **session socket is the signal** — one per tab, alive for the whole session, so "connected" means online and "disconnected" means offline without any extra client heartbeat protocol.
+
+Presence has to be **counted, not flagged**. A user with two tabs open — possibly on two different `ws-*` replicas — must stay online when one closes. So `presence:{user_id}` is a Redis sorted set whose members are connection ids and whose scores are the last heartbeat; the user is online while any score is newer than `CONNECTION_TTL_SECONDS`.
+
+```mermaid
+sequenceDiagram
+    participant T1 as Tab 1
+    participant T2 as Tab 2
+    participant WS as ws-a / ws-b
+    participant R as Redis<br/>presence:{user_id}
+    participant DB as MySQL
+    participant C as Contact's browser
+
+    T1->>WS: WS /messages/ws/user/me?token=...
+    WS->>R: ZADD conn-1 (score = now)
+    Note over WS,R: 0 live before → user *became* online
+    WS->>DB: users.is_online = true, last_seen_at = now
+    WS->>C: presence {is_online: true}
+
+    loop every 20s
+        WS->>R: ZADD conn-1 (refresh score)
+    end
+
+    T2->>WS: second tab connects
+    WS->>R: ZADD conn-2
+    Note over WS,R: 1 live before → no transition, silent
+
+    T1--xWS: tab 1 closes
+    WS->>R: ZREM conn-1 → 1 still live
+    Note over WS,R: still online — nothing broadcast
+
+    T2--xWS: last tab closes
+    WS->>R: ZREM conn-2 → 0 live
+    WS->>DB: is_online = false, last_seen_at = now
+    WS->>C: presence {is_online: false, last_seen_at}
+```
+
+**Only real transitions broadcast.** `connected()` / `disconnected()` return whether the user actually crossed the boundary, so the second tab opening and the first tab closing are both silent.
+
+**Crashed replicas clean up after themselves.** Reads apply the TTL as a score cutoff, so a connection left behind by a replica that died without running its disconnect path simply stops counting once its heartbeat goes stale — no sweeper task, and no ghost "online" users. The heartbeat (`HEARTBEAT_INTERVAL_SECONDS`, 20s) sits comfortably under the TTL (`CONNECTION_TTL_SECONDS`, 60s), so one dropped refresh doesn't flap someone offline.
+
+**Redis is the live truth; `users.is_online` is only the last known value**, written on transitions alongside `last_seen_at`. That's why `GET /conversations` and `GET /users/search` overlay `presence.online_among(...)` onto their responses rather than trusting the column — a replica killed with `SIGKILL` leaves the column stale, but the sorted set expires on its own.
+
+**Transitions notify contacts only** — people who share a conversation with you (`ConversationService.get_contact_ids()`). Broadcasting to every account would leak who is online to strangers and cost one publish per user on the instance.
+
+### Typing indicators
+
+The only frames a client sends *up* a socket. `{"event": "typing", "data": {"is_typing": true}}` goes up the room socket and is rebroadcast to that room with the sender excluded. Anything else arriving on a socket — including non-JSON keepalives — is ignored rather than closing the connection.
+
+A disconnect auto-broadcasts `is_typing: false`, because a client that closes mid-typing never gets to retract it; the frontend additionally expires a stale flag after `TYPING_TTL_MS` in case even that is lost.
+
 ## Tech stack
 
 | | |
