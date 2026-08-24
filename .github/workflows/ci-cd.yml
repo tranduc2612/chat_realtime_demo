@@ -113,9 +113,10 @@ jobs:
       # timeout — once this step finishes, `docker compose up -d` in the
       # webServer command just finds everything already built and running
       # (reuseExistingServer: true) and returns near-instantly.
-      # Two deployments now: the HTTP API (:8000) and the WebSocket service
-      # (:8001) ship separately, so CI has to start both to exercise realtime.
-      - name: Build and start both stacks (dev environment)
+      # Two deployments in one compose file: the HTTP API (:8000) and the
+      # WebSocket service (:8001). `make up` starts both — CI needs both to
+      # exercise realtime.
+      - name: Build and start the dev environment (API + WebSocket)
         run: make up
 
       # `up -d` is detached — it never streams a failing container's own
@@ -126,7 +127,6 @@ jobs:
         if: failure()
         run: |
           docker compose logs --no-color
-          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml logs --no-color
 
       - name: Wait for the frontend to be reachable
         run: |
@@ -147,7 +147,7 @@ jobs:
             sleep 2
           done
           echo "WebSocket service never became reachable" >&2
-          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml logs
+          docker compose logs ws-a ws-b nginx-ws
           exit 1
 
       - uses: actions/setup-node@v4
@@ -173,11 +173,9 @@ jobs:
           path: e2e/test-results
           retention-days: 7
 
-      - name: Tear down both stacks
+      - name: Tear down the stack
         if: always()
-        run: |
-          docker compose -p chat_realtime_demo_ws -f docker-compose.ws.yml down
-          docker compose down -v
+        run: docker compose down -v
 
   build-and-push:
     runs-on: ubuntu-latest

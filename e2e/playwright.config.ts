@@ -15,10 +15,12 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   // Two deployments to wait for, checked independently: the frontend (which
   // `make up` brings up along with the HTTP API) and the WebSocket service on
-  // its own port. Checking :8001 separately matters because reuseExistingServer
-  // only looks at the URL — with a single frontend check, a locally running
-  // vite would satisfy it while nothing served sockets, and every realtime spec
+  // its own port. `make up` starts both sides, so the second entry is usually
+  // just a readiness check — but it still matters, because reuseExistingServer
+  // only looks at the URL: with a single frontend check, a locally running vite
+  // would satisfy it while nothing served sockets, and every realtime spec
   // would fail on a connection error instead of saying what was missing.
+  // `make ws` (re)starts only the socket services if :8001 isn't answering.
   webServer: [
     {
       command: 'make up',

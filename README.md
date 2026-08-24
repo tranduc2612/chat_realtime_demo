@@ -62,7 +62,7 @@ Requires Docker.
 ```bash
 git clone https://github.com/tranduc2612/chat_realtime_demo.git
 cd chat_realtime_demo
-make up             # both services: make dev (HTTP) + make ws (WebSocket)
+make up             # whole dev environment: HTTP API + WebSocket service + frontend
 ```
 
 - App: **http://localhost:5173**
@@ -71,7 +71,7 @@ make up             # both services: make dev (HTTP) + make ws (WebSocket)
 
 That brings up MySQL, Redis, runs migrations, starts three load-balanced API replicas, two WebSocket replicas, and the frontend dev server.
 
-`make up` is a convenience for local work. Real deploys go one service at a time — `make dev` and `make ws` are separate on purpose, and `make down` tears both down.
+`make up` is a convenience for local work. Real deploys go one service at a time: `make dev` brings up the HTTP API side only and `make ws` the WebSocket side only, each without touching the other's containers. `make down` tears the whole environment down.
 
 ## Running without Docker
 
@@ -128,7 +128,7 @@ Frontend is now at **http://localhost:5173**. Without step 2 the app still logs 
 
 ## Environments
 
-Dev, staging, and production are three independent, identically-shaped environments, each on its own port range so **all three can run at once** on one machine. Each has two deployments:
+Dev, staging, and production are three independent, identically-shaped environments — one compose file each — on their own port ranges so **all three can run at once** on one machine. Each file holds two independently deployable sides:
 
 | Env | HTTP API | WebSockets | App | Notes |
 |---|---|---|---|---|
@@ -136,7 +136,7 @@ Dev, staging, and production are three independent, identically-shaped environme
 | staging | `make staging` → :8080 | `make ws-staging` → :8081 | :5174 | real production build, needs `.env.staging` |
 | prod | `make prod` → :9000 | `make ws-prod` → :9001 | :5175 | real production build, needs `.env.prod` |
 
-Each has a matching `-down` target (`make ws-staging-down`, etc.) that tears one deployment down without touching the others.
+Each side has a matching `-down` target (`make ws-staging-down`, etc.) that removes just that side's containers, leaving the other running. `make up` / `make staging-up` / `make prod-up` start a whole environment at once, and `make down` / `make staging-down-all` / `make prod-down-all` tear one down completely.
 
 First-time staging/prod setup: `cp .env.staging.example .env.staging` (and same for prod), then fill in real secrets — the committed dev `.env` works as-is.
 
@@ -156,9 +156,9 @@ chat_realtime_demo/
 ├── .github/workflows/      # CI/CD (GitHub Actions)
 ├── VERSION                 # single source of truth for the app version
 ├── Makefile                # make dev / ws / staging / prod / up / down
-├── docker-compose.yml            + docker-compose.ws.yml            # dev
-├── docker-compose.staging.yml    + docker-compose.ws.staging.yml    # staging
-└── docker-compose.prod.yml       + docker-compose.ws.prod.yml       # production
+├── docker-compose.yml          # dev        — API + WebSocket + frontend + infra
+├── docker-compose.staging.yml  # staging    — same shape, own ports/volume
+└── docker-compose.prod.yml     # production — same shape, own ports/volume
 ```
 
 ## Testing
