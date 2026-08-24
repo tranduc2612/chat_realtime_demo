@@ -1,5 +1,11 @@
 {
   "email_already_registered": "Email đã được đăng ký",
   "username_already_taken": "Tên đăng nhập đã tồn tại",
-  "incorrect_email_or_password": "Email hoặc mật khẩu không đúng"
+  "incorrect_email_or_password": "Email hoặc mật khẩu không đúng",
+  "email_required": "Email không được để trống",
+  "current_password_incorrect": "Mật khẩu hiện tại không đúng",
+  "invalid_image_type": "Chỉ chấp nhận ảnh JPEG, PNG, GIF và WebP",
+  "invalid_image_content": "Tệp này không phải là ảnh hợp lệ",
+  "image_too_large": "Ảnh quá lớn (tối đa 5MB)",
+  "empty_image": "Tệp tải lên rỗng"
 }

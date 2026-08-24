@@ -27,6 +27,11 @@ x-backend-base: &backend-base
   build: ./chat_with_fastapi
   image: chat_realtime_demo-backend:${APP_VERSION:-1.0.0}
   restart: unless-stopped
+  volumes:
+    # Avatars. Shared by backend-a/b/c because nginx round-robins: the replica
+    # that serves GET /uploads/... is almost never the one that wrote the file.
+    # (Replaced by a bucket when this moves to S3.)
+    - uploads_data_prod:/app/uploads
   depends_on:
     mysql:
       condition: service_healthy
@@ -122,6 +127,8 @@ services:
 
 volumes:
   mysql_data_prod:
+  # Shared by backend-a/b/c — see the note in x-backend-base.
+  uploads_data_prod:
 
 # Shared with the separately-deployed WebSocket stack
 # (docker-compose.ws.prod.yml). Declared in both rather than `external`, so

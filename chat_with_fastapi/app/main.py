@@ -4,9 +4,11 @@ import sentry_sdk
 from fastapi import FastAPI, Depends, HTTPException
 from app.api.main import api_router
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.presence import presence
 from app.core.events import events
+from app.core.storage import storage
 
 # Gated on SENTRY_DSN being set (defaults to None/unset) — dev stays silent
 # unless you explicitly opt it in via .env; staging/prod turn this on via
@@ -46,5 +48,18 @@ app.add_middleware(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+# User uploads (avatars). Served straight off disk at UPLOAD_URL_PREFIX —
+# outside API_PREFIX, since these are files, not API resources, and the URL
+# is stored in the database. Only formats validated by magic bytes ever land
+# here (see app/utils/images.py), so there is no SVG/HTML to execute in the
+# app's origin. When this moves to S3 the mount goes away and stored URLs
+# become absolute; the frontend already handles both (resolveMediaUrl).
+storage.ensure_root()
+app.mount(
+    settings.UPLOAD_URL_PREFIX,
+    StaticFiles(directory=settings.UPLOAD_DIR),
+    name="uploads",
+)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)

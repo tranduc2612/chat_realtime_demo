@@ -38,3 +38,7 @@ Thumbs.db
 # Log files
 *.log
 log.txt
+
+
+# User uploads — written at runtime; a shared Docker volume in compose
+uploads/

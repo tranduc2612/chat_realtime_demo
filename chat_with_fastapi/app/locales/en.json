@@ -1,5 +1,11 @@
 {
   "email_already_registered": "Email already registered",
   "username_already_taken": "Username already taken",
-  "incorrect_email_or_password": "Incorrect email or password"
+  "incorrect_email_or_password": "Incorrect email or password",
+  "email_required": "Email cannot be empty",
+  "current_password_incorrect": "Current password is incorrect",
+  "invalid_image_type": "Only JPEG, PNG, GIF and WebP images are allowed",
+  "invalid_image_content": "That file is not a valid image",
+  "image_too_large": "Image is too large (maximum 5MB)",
+  "empty_image": "The uploaded file is empty"
 }

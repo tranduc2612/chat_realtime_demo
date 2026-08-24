@@ -22,6 +22,12 @@ x-backend-base: &backend-base
   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
   volumes:
     - ./chat_with_fastapi:/app
+    # Avatars land here. A named volume, not part of the bind mount above, for
+    # two reasons: uploads are runtime data and don't belong in the source
+    # tree, and all three replicas must see the same files — nginx round-robins,
+    # so the replica serving GET /uploads/... is almost never the one that
+    # wrote it. (Replaced by a bucket when this moves to S3.)
+    - uploads_data:/app/uploads
   depends_on:
     mysql:
       condition: service_healthy
@@ -131,6 +137,8 @@ services:
 
 volumes:
   mysql_data:
+  # Shared by backend-a/b/c — see the note in x-backend-base.
+  uploads_data:
 
 # Named so the separately-deployed WebSocket stack (docker-compose.ws.yml) can
 # reach mysql/redis by service name. Declared in both files rather than

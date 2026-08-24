@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 3000
 
+    # Uploads — user-supplied files (avatars today) land on local disk under
+    # UPLOAD_DIR and are served back at UPLOAD_URL_PREFIX by StaticFiles. The
+    # directory is a shared named volume in Docker, because the replica that
+    # accepts an upload is rarely the one nginx sends the next GET to. Both
+    # values exist as settings so the eventual move to S3 is a config change
+    # plus a new Storage class (see app/core/storage.py), not a code hunt.
+    UPLOAD_DIR: str = "uploads"
+    UPLOAD_URL_PREFIX: str = "/uploads"
+    MAX_AVATAR_BYTES: int = 5 * 1024 * 1024
+
     # CORS
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
