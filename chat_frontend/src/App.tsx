@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ChatPage from './pages/ChatPage';
+import NotFoundPage from './pages/NotFoundPage';
 import { useAuthStore } from './stores/authStore';
 import { useThemeStore, applyTheme } from './stores/themeStore';
 
@@ -39,6 +40,9 @@ export default function App() {
             </RequireAuth>
           }
         />
+        {/* Unguarded on purpose: a wrong URL should say so, for signed-in and
+            signed-out visitors alike. The page adapts its CTA to which one. */}
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>
   );
