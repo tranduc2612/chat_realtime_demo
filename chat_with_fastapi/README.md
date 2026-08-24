@@ -118,7 +118,8 @@ app/
 │   ├── database.py      # async engine/session factory
 │   ├── security.py      # JWT + password hashing
 │   ├── events.py        # publishes realtime events for the WebSocket service
-│   └── presence.py      # reads who is online (the WebSocket service writes it)
+│   ├── presence.py      # reads who is online (the WebSocket service writes it)
+│   └── storage.py       # where uploaded files go — local disk today, S3 later
 ├── models/              # SQLAlchemy ORM models (source of truth for schema)
 ├── schemas/             # Pydantic request/response models
 ├── services/            # business logic, instantiated per-request with a DB session
@@ -142,7 +143,9 @@ app/
 | `POST /auth/login` | OAuth2 password login → JWT |
 | `POST /users/` | Public registration |
 | `GET /users/search?q=` | Search users |
-| `GET /users/me`, `PUT /users/me` | Current user profile |
+| `GET /users/me`, `PUT /users/me` | Current user profile — `PUT` is partial (`full_name`, `email`, `password`); `username` is fixed |
+| `POST /users/me/avatar` | Upload an avatar (multipart) — validated by magic bytes, max 5MB |
+| `DELETE /users/me/avatar` | Remove your avatar |
 | `DELETE /users/disable/{id}` | Disable a user |
 | `GET /conversations` | List current user's conversations |
 | `POST /conversations` | Create a group, or reuse an existing direct conversation |
@@ -151,6 +154,8 @@ app/
 | `POST /messages/send` | Send a message (publishes it for the WebSocket service to deliver) |
 | `GET /messages/{conversation_id}/reads` | Every member's read watermark |
 | `POST /messages/{conversation_id}/read` | Advance your own read watermark |
+
+Avatars are a separate multipart endpoint rather than an `avatar_url` field on `PUT /users/me`, so the stored URL always comes from bytes the server validated — never a client-supplied string. Uploads are checked three ways (declared content-type, a 5MB cap enforced while streaming, and magic-byte sniffing that rejects a script named `.png`), then written through `app/core/storage.py` and served back at `/uploads/...`. That module is the seam for the eventual move to S3: same `save`/`delete`, different backend, no route or schema changes. Behind the load balancer the upload directory is a volume shared by every API replica, since nginx round-robins and the replica serving a file is rarely the one that wrote it.
 
 The two `WS /messages/ws/...` endpoints are served by [`../chat_with_fastapi_ws`](../chat_with_fastapi_ws) on port 8001, under the same URL prefix.
 
