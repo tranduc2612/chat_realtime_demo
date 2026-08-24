@@ -1,3 +1,21 @@
+# Dev environment — the whole app in one file: infra (MySQL/Redis/migrate),
+# the HTTP API behind nginx (:8000), the WebSocket service behind its own
+# nginx (:8001), and the frontend (:5173). Run with `make up` (everything),
+# or `make dev` / `make ws` to bring up just one side.
+#
+# One compose file, still two deployments. The API and WebSocket services
+# remain separate images, separate replicas, separate nginx and separate
+# ports — merging the files only removed the second compose project, not the
+# split. Each side is still released, restarted and taken down on its own via
+# the service groups in the Makefile; restarting one does not touch the
+# other's containers or its open sockets.
+#
+# What they do share, unavoidably: MySQL and Redis. The socket side verifies
+# JWTs and conversation membership against the database and receives messages
+# published by the API side through Redis. Migrations belong to the API side
+# (the one-shot `migrate` service) — nothing on the socket side writes schema,
+# so there is no second migration runner to race with the first.
+
 x-backend-env: &backend-env
   APP_NAME: API_CHAT_REALTIME
   APP_VERSION: ${APP_VERSION:-1.0.0}
@@ -22,6 +40,12 @@ x-backend-base: &backend-base
   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
   volumes:
     - ./chat_with_fastapi:/app
+    # Avatars land here. A named volume, not part of the bind mount above, for
+    # two reasons: uploads are runtime data and don't belong in the source
+    # tree, and all three replicas must see the same files — nginx round-robins,
+    # so the replica serving GET /uploads/... is almost never the one that
+    # wrote it. (Replaced by a bucket when this moves to S3.)
+    - uploads_data:/app/uploads
   depends_on:
     mysql:
       condition: service_healthy
@@ -29,6 +53,37 @@ x-backend-base: &backend-base
       condition: service_healthy
     migrate:
       condition: service_completed_successfully
+
+x-ws-env: &ws-env
+  APP_NAME: CHAT_REALTIME_WS
+  APP_VERSION: ${APP_VERSION:-1.0.0}
+  API_PREFIX: /api/v1
+  DATABASE_URL: mysql+aiomysql://root:12345678@mysql:3306/chat_realtime_demo
+  REDIS_URL: redis://redis:6379/0
+  # Must match the API side's key: this side only *verifies* tokens the API
+  # issued, so a mismatch rejects every socket with 4001.
+  SECRET_KEY: dev-secret-key-change-in-production
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+
+x-ws-base: &ws-base
+  environment:
+    <<: *ws-env
+  build: ./chat_with_fastapi_ws
+  image: chat_realtime_demo-ws:${APP_VERSION:-1.0.0}-dev
+  restart: unless-stopped
+  command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+  volumes:
+    - ./chat_with_fastapi_ws:/app
+  # Depends on the infrastructure only, never on `migrate` or the backend
+  # replicas: sockets must come up (and stay up) whether or not the API side
+  # is running. That independence is the point of the split.
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
 
 services:
   mysql:
@@ -85,10 +140,9 @@ services:
       mysql:
         condition: service_healthy
 
-  # HTTP API replicas. WebSockets are a separate project entirely
-  # (chat_with_fastapi_ws, docker-compose.ws.yml, `make ws`) — nothing here
-  # serves them. Fixed names (not `docker compose --scale`) so nginx's upstream
-  # block can address each one explicitly and actually round-robin.
+  # ── HTTP API (chat_with_fastapi) — REST only, no sockets ──────────────────
+  # Fixed names (not `docker compose --scale`) so nginx's upstream block can
+  # address each one explicitly and actually round-robin.
   backend-a:
     <<: *backend-base
 
@@ -109,6 +163,28 @@ services:
       - backend-a
       - backend-b
       - backend-c
+
+  # ── WebSocket service (chat_with_fastapi_ws) — sockets only, no REST ──────
+  # Scale this pool on its own — sockets are long-lived and bound by memory and
+  # file descriptors, where API replicas are bound by CPU and the database.
+  # Adding a replica means a service here plus a `server` line in
+  # nginx/nginx.ws.conf's ws_pool (and in the Makefile's WS_SERVICES).
+  ws-a:
+    <<: *ws-base
+
+  ws-b:
+    <<: *ws-base
+
+  nginx-ws:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.ws.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8001:8001"
+    depends_on:
+      - ws-a
+      - ws-b
 
   frontend:
     build: ./chat_frontend
@@ -131,11 +207,5 @@ services:
 
 volumes:
   mysql_data:
-
-# Named so the separately-deployed WebSocket stack (docker-compose.ws.yml) can
-# reach mysql/redis by service name. Declared in both files rather than
-# `external`, so neither has to be started first and `docker compose down` on
-# one leaves the network alone while the other is still attached.
-networks:
-  default:
-    name: chat_realtime_demo_shared
+  # Shared by backend-a/b/c — see the note in x-backend-base.
+  uploads_data:

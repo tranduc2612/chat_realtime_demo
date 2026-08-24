@@ -16,10 +16,12 @@ chat_realtime_demo/
 ├── Makefile                   # root-level: `make dev`/`staging`/`prod` — do not confuse with
 │                               # chat_with_fastapi/Makefile's `make dev` (that one is backend-local,
 │                               # non-Docker `uvicorn --reload`; this one is the whole Docker stack)
-├── docker-compose.yml         # dev: HTTP API + infra (MySQL/Redis/migrate) + frontend
-├── docker-compose.ws.yml      # dev: WebSocket service — deployed separately, port 8001
-├── docker-compose.staging.yml / docker-compose.ws.staging.yml  # same pair, staging
-├── docker-compose.prod.yml    / docker-compose.ws.prod.yml     # same pair, production
+├── docker-compose.yml         # dev: everything — infra (MySQL/Redis/migrate), HTTP API
+│                               # (:8000), WebSocket service (:8001), frontend. The two
+│                               # backends are still deployed independently, as service
+│                               # groups (Makefile's API_SERVICES / WS_SERVICES)
+├── docker-compose.staging.yml # same shape, staging ports/volume
+├── docker-compose.prod.yml    # same shape, production ports/volume
 ├── .env                       # dev secrets (committed — placeholder values only)
 └── .env.staging / .env.prod   # staging/prod secrets (gitignored — copy from the .example files)
 ```
@@ -28,7 +30,7 @@ chat_realtime_demo/
 
 Three independent, identically-shaped environments (MySQL, Redis, a one-shot `migrate` service, 3 HTTP API replicas behind nginx, 2 WebSocket replicas behind their own nginx, frontend), each on its own port range so **all three can run at once on one machine**.
 
-Each environment ships as **two deployments** — the HTTP API and the WebSocket service, on separate ports (see the next section for why):
+Each environment is **one compose file** holding **two independently deployable sides** — the HTTP API and the WebSocket service, on separate ports (see the next section for why). They share a file (and the infra services in it), not a lifecycle: every `make` target names only its own side's services, so releasing, restarting or removing one leaves the other's containers and open sockets alone.
 
 | Env | HTTP API | WebSockets | Frontend | MySQL/Redis published? |
 |---|---|---|---|---|
@@ -36,9 +38,9 @@ Each environment ships as **two deployments** — the HTTP API and the WebSocket
 | staging | `make staging` → `:8080` | `make ws-staging` → `:8081` | `:5174`, real `vite build`+`preview` | no, internal only |
 | prod | `make prod` → `:9000` | `make ws-prod` → `:9001` | `:5175`, real `vite build`+`preview` | no, internal only |
 
-`make up` / `make down` bring up or tear down both dev deployments at once — convenience for local work only; real deploys go one side at a time. `e2e/playwright.config.ts` uses `make up` for the same reason.
+`make up` / `make down` bring up or tear down the whole dev environment at once — convenience for local work only; real deploys go one side at a time via `make dev` / `make ws`. `e2e/playwright.config.ts` uses `make up` for the same reason. Staging/prod have the same pair: `make staging-up` / `make staging-down-all`, `make prod-up` / `make prod-down-all`. The per-side `-down` targets (`make dev-down`, `make ws-staging-down`, …) use `docker compose rm -sf <that side's services>`, which is what keeps them from touching the rest of the environment; the `*-down-all` targets are plain `docker compose down` and also remove the network.
 
-`docker-compose.yml` **is** the dev environment — bind-mounted source, `--reload`, hardcoded dev placeholder secrets, unchanged from before. `docker-compose.staging.yml`/`docker-compose.prod.yml` are separate, self-contained compose files (same shape, no bind mounts — they run whatever's baked into the image, closer to a real release build) driven by `.env.staging`/`.env.prod`. First-time setup for either: `cp .env.staging.example .env.staging` (and same for prod), fill in real values — the committed dev `.env` is fine as-is (its secrets are already public in `docker-compose.yml`'s history), but the `.example` placeholders for staging/prod are **not** safe to run with as-is. `make {staging,prod}-down` (and `make ws-{staging,prod}-down`) tear each down without touching the others (`-p chat_realtime_demo_{staging,prod}` gives each its own container/network namespace, which is also what lets all three coexist).
+`docker-compose.yml` **is** the dev environment — bind-mounted source, `--reload`, hardcoded dev placeholder secrets, unchanged from before. `docker-compose.staging.yml`/`docker-compose.prod.yml` are separate, self-contained compose files (same shape, no bind mounts — they run whatever's baked into the image, closer to a real release build) driven by `.env.staging`/`.env.prod`. First-time setup for either: `cp .env.staging.example .env.staging` (and same for prod), fill in real values — the committed dev `.env` is fine as-is (its secrets are already public in `docker-compose.yml`'s history), but the `.example` placeholders for staging/prod are **not** safe to run with as-is. `make {staging,prod}-down` (and `make ws-{staging,prod}-down`) remove one side's containers without touching the others (`-p chat_realtime_demo_{staging,prod}` gives each environment its own container/network namespace, which is also what lets all three coexist).
 
 **Versioning:** `VERSION` at the repo root (e.g. `1.0.0`) is the single source of truth. The root `Makefile` reads it and exports it as `APP_VERSION` before invoking `docker compose`, which flows into two places per environment: the backend's `APP_VERSION` setting (visible live at `/api/v1/docs` on any environment — FastAPI's `version=` field) and each image's tag (`chat_realtime_demo-backend:1.0.0-dev`, `...-staging`, or bare `...1.0.0` for prod — `docker images` shows all three side by side). To release a new version: bump `VERSION`, rerun `make <env>` — nothing else to touch.
 
@@ -52,7 +54,7 @@ The backend is **two separate FastAPI projects**, deployed independently:
 | Redis | publishes (`app/core/events.py`) | publishes *and* subscribes (`app/core/websocket.py`) |
 | Database | full ORM + Alembic, owns the schema | four explicit SQL statements (`app/db/queries.py`), read-mostly |
 | Dev port | `:8000` | `:8001` |
-| Compose | `docker-compose.yml` (`make dev`) | `docker-compose.ws.yml` (`make ws`) |
+| Compose | `API_SERVICES` in the Makefile (`make dev`) | `WS_SERVICES` in the Makefile (`make ws`) |
 | nginx | `nginx/nginx.conf` | `nginx/nginx.ws.conf` |
 
 Why split at all: the two kinds of traffic scale on different limits — HTTP requests are short and CPU/DB-bound, sockets are long-lived and memory/file-descriptor-bound — and a problem in one should not take the other down. Verified by stopping each side in turn: with the API down, open sockets stay open, new ones are still accepted and typing still flows; with the WS service down, `POST /messages/send` still returns 201 and persists.
@@ -68,7 +70,7 @@ They also share MySQL and Redis themselves, unavoidably — Redis going down sto
 
 #### Load balancing (`nginx/nginx.conf`)
 
-`nginx.conf` (API) and `nginx.ws.conf` (WebSockets) are bind-mounted read-only into their respective deployments across all three environments. `nginx` is the only container publishing its environment's backend port to the host; `backend-a/b/c` and `ws-a/b` are internal-only and only reachable through it. Each config has one upstream (`api_pool` in one, `ws_pool` in the other — see the split above) listing its replicas by fixed compose service name (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin), with passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`, or `:8080`/`:9000` for staging/prod).
+`nginx.conf` (API) and `nginx.ws.conf` (WebSockets) are bind-mounted read-only into the `nginx` and `nginx-ws` services across all three environments. `nginx` is the only container publishing its environment's backend port to the host; `backend-a/b/c` and `ws-a/b` are internal-only and only reachable through it. Each config has one upstream (`api_pool` in one, `ws_pool` in the other — see the split above) listing its replicas by fixed compose service name (not a scaled service — nginx's `upstream` block resolves hostnames once at config-load time, so a bare service name behind `docker compose --scale` wouldn't actually round-robin), with passive health checks (`max_fails`/`fail_timeout`). The response header `X-Upstream-Addr` shows which replica served a given request — useful for confirming the balancing is real (`curl -sI http://localhost:8000/api/v1/docs`, or `:8080`/`:9000` for staging/prod).
 
 This is where the Redis Pub/Sub design described below pays off, and it's what makes the api/ws split possible at all: a `POST /messages/send` handled by `backend-b` in the API service publishes to Redis, and `ws-a`/`ws-b` in the WebSocket service each have their own listener task that delivers to *their* locally-connected sockets. So the replica that handled the request need not be — and now never is — the one holding the recipient's socket, and two users whose sockets land on different ws replicas (nginx guarantees no session affinity, and none is needed) still see messages in real time. Migrations run once via the separate `migrate` service specifically to avoid every replica racing to apply `alembic upgrade head` concurrently on startup.
 
@@ -252,7 +254,7 @@ npm run test        # playwright test
 npm run test:ui     # playwright test --ui
 ```
 
-`playwright.config.ts` starts the stack itself via two `webServer` entries — `make up` waiting on `http://localhost:5173`, and `make ws` waiting on `http://localhost:8001/health`. The second one matters: `reuseExistingServer` only checks its own URL, so without it a locally running vite would satisfy the config while nothing served sockets, and every realtime spec would fail on a connection error instead of saying what was missing. **`workers: 1`** is intentional — the target is a single dev-mode `uvicorn --reload` process, not a scaled multi-worker backend, and running specs concurrently was flaking it under load.
+`playwright.config.ts` starts the stack itself via two `webServer` entries — `make up` waiting on `http://localhost:5173`, and `make ws` waiting on `http://localhost:8001/health`. `make up` already starts the socket side, so the second entry is usually just a readiness check, but it still matters: `reuseExistingServer` only checks its own URL, so without it a locally running vite would satisfy the config while nothing served sockets, and every realtime spec would fail on a connection error instead of saying what was missing. **`workers: 1`** is intentional — the target is a single dev-mode `uvicorn --reload` process, not a scaled multi-worker backend, and running specs concurrently was flaking it under load.
 
 - `helpers/users.ts` — API-level fixtures (`registerUser`, `loginUser`, `createDirectConversation`) that set up test data directly via the backend REST API, skipping the UI where it isn't the thing under test
 - `helpers/ui.ts` — UI-driven helpers (`loginViaUI`)

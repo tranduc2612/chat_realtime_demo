@@ -70,7 +70,7 @@ The API is served at `http://127.0.0.1:8000`, mounted under `/api/v1`.
 
 ## Running with Docker
 
-The repo root (`chat_realtime_demo/`) has three environments — dev, staging, production — each a full stack (MySQL, Redis, a one-shot `migrate` service, this API as 3 replicas behind nginx, the WebSocket service as its own deployment, and the frontend), each on its own port range so all three can run at once:
+The repo root (`chat_realtime_demo/`) has three environments — dev, staging, production — one compose file each, holding a full stack (MySQL, Redis, a one-shot `migrate` service, this API as 3 replicas behind nginx, the WebSocket service as its own separately-deployable side, and the frontend), each on its own port range so all three can run at once:
 
 ```bash
 cd ..              # repo root, alongside chat_frontend/
@@ -79,7 +79,7 @@ make staging       # :8080 backend / :5174 frontend — real build, needs .env.s
 make prod          # :9000 backend / :5175 frontend — real build, needs .env.prod first
 ```
 
-`make dev` starts this service only; the WebSocket service is a separate deployment with its own targets (`make ws`, `make ws-staging`, `make ws-prod`). `make up` runs both dev deployments, which is what `e2e/` uses. Staging/prod need a one-time setup step: `cp .env.staging.example .env.staging` (and the same for prod), then fill in real values — the placeholder `.example` values are not safe to run with as-is. `make {dev,staging,prod}-down` tears down the corresponding environment only.
+`make dev` starts this service only — the WebSocket side shares the same compose file but has its own targets (`make ws`, `make ws-staging`, `make ws-prod`), and each target names only its own services, so releasing one side never touches the other's containers. `make up` runs the whole dev environment, which is what `e2e/` uses. Staging/prod need a one-time setup step: `cp .env.staging.example .env.staging` (and the same for prod), then fill in real values — the placeholder `.example` values are not safe to run with as-is. `make {dev,staging,prod}-down` removes just this service's containers in that environment; `make down` / `make {staging,prod}-down-all` tears a whole environment down.
 
 Only dev builds with source bind-mounted and `uvicorn --reload`; staging/prod run whatever's baked into the image at build time (closer to a real release artifact), and the frontend runs an actual `vite build && vite preview` there instead of the dev server. `nginx` is the only container publishing its environment's backend port to the host in every case — the three API replicas are internal-only, reachable only through nginx's `upstream api_pool` (`nginx/nginx.conf`, shared across all three environments, round-robin + passive health checks). The WebSocket service has its own nginx and its own port (`nginx/nginx.ws.conf`, :8001/:8081/:9001), so either side can be restarted or fail without touching the other. Response header `X-Upstream-Addr` shows which replica handled a request. This is why the Redis Pub/Sub design in [Realtime architecture](#realtime-architecture-redis-pubsub) matters: the replica that handles a send is never the one holding the recipient's socket, and clients still see messages live.
 

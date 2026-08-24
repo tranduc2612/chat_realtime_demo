@@ -7,3 +7,6 @@
 !.env.prod.example
 
 .DS_Store
+
+# Local database dumps (see backups/ — never committed)
+backups/
