@@ -7,6 +7,7 @@ import Avatar from '../ui/Avatar';
 import ThemeToggle from '../ui/ThemeToggle';
 import UserSearchDropdown from './UserSearchDropdown';
 import CreateGroupModal from './CreateGroupModal';
+import EditProfileModal from '../profile/EditProfileModal';
 import type { Conversation } from '../../types';
 
 function useConvDisplay(conv: Conversation, myId: string) {
@@ -32,6 +33,7 @@ export default function ConversationList() {
   const { theme } = useThemeStore();
   const isDark = theme === 'dark';
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
 
   useEffect(() => {
     fetchConversations();
@@ -50,6 +52,7 @@ export default function ConversationList() {
   return (
     <>
     {showCreateGroup && <CreateGroupModal onClose={() => setShowCreateGroup(false)} />}
+    {showProfile && <EditProfileModal onClose={() => setShowProfile(false)} />}
     <aside
       className="w-72 flex-shrink-0 flex flex-col h-full transition-colors duration-300"
       style={{
@@ -65,7 +68,13 @@ export default function ConversationList() {
         style={{ borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : '#e2e8f0'}` }}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
+          {/* Your own row doubles as the entry point to profile editing —
+              the avatar is where people already look for it. */}
+          <button
+            onClick={() => setShowProfile(true)}
+            title="Edit your profile"
+            className={`flex items-center gap-3 min-w-0 text-left rounded-xl px-1 -mx-1 py-1 transition ${isDark ? 'hover:bg-white/5' : 'hover:bg-slate-100'}`}
+          >
             <Avatar name={user?.full_name ?? user?.username} src={user?.avatar_url} size="md" online={true} />
             <div className="min-w-0">
               <p className={`font-semibold text-sm truncate ${isDark ? 'text-white' : 'text-slate-800'}`}>
@@ -76,7 +85,7 @@ export default function ConversationList() {
                 Online
               </p>
             </div>
-          </div>
+          </button>
 
           <div className="flex items-center gap-0.5">
             <ThemeToggle />

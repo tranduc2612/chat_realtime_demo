@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { resolveMediaUrl } from '../../api/client';
 
 interface AvatarProps {
   src?: string | null;
@@ -22,16 +23,24 @@ function Silhouette() {
 }
 
 export default function Avatar({ src, name, size = 'md', online }: AvatarProps) {
-  const [imgError, setImgError] = useState(false);
+  // Every avatar in the app renders through here, so resolving the stored
+  // path to the API origin once at this point covers conversations, read
+  // receipts and typing indicators alike.
+  const resolved = resolveMediaUrl(src);
+
+  // Remembering *which* URL failed rather than a plain boolean means a new
+  // avatar gets a fresh attempt: one broken image would otherwise pin the
+  // silhouette in place even after the user uploads a working photo.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
 
   return (
     <div className={`relative flex-shrink-0 ${sizes[size]}`}>
-      {src && !imgError ? (
+      {resolved && failedSrc !== resolved ? (
         <img
-          src={src}
+          src={resolved}
           alt={name ?? ''}
           className="w-full h-full rounded-full object-cover"
-          onError={() => setImgError(true)}
+          onError={() => setFailedSrc(resolved)}
         />
       ) : (
         <Silhouette />

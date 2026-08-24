@@ -3,8 +3,10 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ChatPage from './pages/ChatPage';
+import NotFoundPage from './pages/NotFoundPage';
 import { useAuthStore } from './stores/authStore';
 import { useThemeStore, applyTheme } from './stores/themeStore';
+import Toaster from './components/ui/Toaster';
 
 import type { ReactElement } from 'react';
 
@@ -28,6 +30,9 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      {/* Outside <Routes> on purpose: a toast has to outlive the component
+          that raised it — saving your profile closes the modal first. */}
+      <Toaster />
       <Routes>
         <Route path="/login" element={<RedirectIfAuth><LoginPage /></RedirectIfAuth>} />
         <Route path="/register" element={<RedirectIfAuth><RegisterPage /></RedirectIfAuth>} />
@@ -39,6 +44,9 @@ export default function App() {
             </RequireAuth>
           }
         />
+        {/* Unguarded on purpose: a wrong URL should say so, for signed-in and
+            signed-out visitors alike. The page adapts its CTA to which one. */}
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>
   );

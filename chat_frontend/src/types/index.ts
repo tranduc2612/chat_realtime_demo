@@ -111,6 +111,21 @@ export interface RegisterPayload {
   full_name?: string;
 }
 
+/**
+ * Partial profile edit — only the keys present are changed server-side, so
+ * omitting a field means "leave it alone" and sending `full_name: null`
+ * means "clear it". `current_password` is required whenever `password` is set.
+ *
+ * No `username`: it's the login identifier and is fixed at registration
+ * (the API ignores it here too, not just the UI).
+ */
+export interface ProfileUpdatePayload {
+  full_name?: string | null;
+  email?: string;
+  password?: string;
+  current_password?: string;
+}
+
 export interface Token {
   access_token: string;
   token_type: string;
